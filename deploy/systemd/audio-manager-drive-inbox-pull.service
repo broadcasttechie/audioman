@@ -1,0 +1,16 @@
+# One .service per job, all following this shape. Copy per job (see the
+# .timer files alongside this) rather than templating with systemd's
+# instance syntax — five jobs is few enough that explicit is clearer
+# than clever, and it keeps each job's timer schedule readable on its own.
+#
+# Save as e.g. /etc/systemd/system/audio-manager-drive-inbox-pull.service
+
+[Unit]
+Description=Audio Manager job: drive-inbox-pull
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Assumes the Flask app is bound to localhost:5000 — adjust if you put
+# it behind a reverse proxy or different port.
+ExecStart=/usr/bin/curl -sf -X POST "http://127.0.0.1:5000/api/jobs/drive-inbox-pull/run?triggered_by=scheduled"

@@ -1,0 +1,37 @@
+# Save as /etc/systemd/system/audio-manager-worker@.service (a
+# TEMPLATE unit - note the @ before .service).
+#
+# This is the queue consumer — a long-running daemon, NOT a
+# timer-triggered oneshot like the other units in this directory.
+# Safe to run multiple instances: claiming uses Postgres's
+# FOR UPDATE SKIP LOCKED (jobs/queue.py), so two instances can never
+# claim the same job_queue row. The %i instance name is just for
+# systemd bookkeeping/logging (`journalctl -u audio-manager-worker@1`)
+# — worker.py itself doesn't need to know its instance number, it
+# identifies itself internally as "<hostname>:<pid>".
+#
+# Enable ONE worker (the common case for this app's volume):
+#   systemctl daemon-reload
+#   systemctl enable --now audio-manager-worker@1.service
+#
+# Enable a second, e.g. after a backlog builds up or you add more
+# concurrent external-facing jobs:
+#   systemctl enable --now audio-manager-worker@2.service
+#
+# Each instance is independent - stopping/restarting one doesn't
+# affect the other, and you can scale up or down without touching any
+# other unit in this directory.
+
+[Unit]
+Description=Audio Manager job queue worker (instance %i)
+After=network-online.target postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/audio-manager
+ExecStart=/usr/bin/python3 /opt/audio-manager/jobs/worker.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

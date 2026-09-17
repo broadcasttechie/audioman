@@ -1,0 +1,8 @@
+# Save as /etc/systemd/system/audio-manager-find-orphans.service
+[Unit]
+Description=Audio Manager job: find-orphans
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -sf -X POST "http://127.0.0.1:5000/api/jobs/find-orphans/run?triggered_by=scheduled"

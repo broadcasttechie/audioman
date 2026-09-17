@@ -1,0 +1,10 @@
+# Save as /etc/systemd/system/audio-manager-refile-all.timer
+[Unit]
+Description=Run audio-manager refile-all nightly
+
+[Timer]
+OnCalendar=*-*-* 02:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

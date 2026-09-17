@@ -1,0 +1,16 @@
+# Save as /etc/systemd/system/audio-manager-enrich-photos.timer
+# Runs frequently, not nightly: this is a self-healing queue (see
+# jobs/enrich.py) - the sooner it runs after an outage ends, the
+# sooner backlog gets cleared. Cheap to run often since it does
+# nothing when the queue (captured_at set, *_checked_at NULL) is empty.
+
+[Unit]
+Description=Run audio-manager enrich-photos every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

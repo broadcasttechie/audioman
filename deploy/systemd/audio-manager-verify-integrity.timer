@@ -1,0 +1,10 @@
+# Save as /etc/systemd/system/audio-manager-verify-integrity.timer
+[Unit]
+Description=Run audio-manager verify-integrity nightly
+
+[Timer]
+OnCalendar=*-*-* 02:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

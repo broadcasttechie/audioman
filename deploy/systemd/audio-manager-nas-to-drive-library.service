@@ -1,0 +1,8 @@
+# Save as /etc/systemd/system/audio-manager-nas-to-drive-library.service
+[Unit]
+Description=Audio Manager job: nas-to-drive-library
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -sf -X POST "http://127.0.0.1:5000/api/jobs/nas-to-drive-library/run?triggered_by=scheduled"

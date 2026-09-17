@@ -1,0 +1,14 @@
+# Save as /etc/systemd/system/audio-manager-process-exports.timer
+# Frequent: someone is often actively waiting on an export to finish
+# and download it, unlike the enrichment/maintenance jobs.
+
+[Unit]
+Description=Run audio-manager process-exports every 2 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

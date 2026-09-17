@@ -1,0 +1,19 @@
+# Save as /etc/systemd/system/audio-manager-drive-inbox-pull.timer
+# Enable both with:
+#   systemctl daemon-reload
+#   systemctl enable --now audio-manager-drive-inbox-pull.timer
+#
+# "Run now" from the UI/API doesn't touch this timer at all — it just
+# calls the same /api/jobs/<name>/run endpoint directly, so a manual
+# run and a scheduled run are indistinguishable to the app.
+
+[Unit]
+Description=Run audio-manager drive-inbox-pull every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

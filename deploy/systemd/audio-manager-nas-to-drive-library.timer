@@ -1,0 +1,11 @@
+# Save as /etc/systemd/system/audio-manager-nas-to-drive-library.timer
+[Unit]
+Description=Run audio-manager nas-to-drive-library
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=60min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

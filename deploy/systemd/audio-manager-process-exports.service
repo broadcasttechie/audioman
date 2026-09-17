@@ -1,0 +1,8 @@
+# Save as /etc/systemd/system/audio-manager-process-exports.service
+[Unit]
+Description=Audio Manager job: process-exports
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -sf -X POST "http://127.0.0.1:5000/api/jobs/process-exports/run?triggered_by=scheduled"
