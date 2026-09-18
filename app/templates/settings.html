@@ -66,33 +66,53 @@
 <div id="save-status" class="status"></div>
 
 <section>
-  <h2>Google Drive <span id="drive-badge" class="badge"></span></h2>
+  <h2>Google Drive <span id="drive-badge" class="badge"></span> <span id="drive-method-badge" class="badge"></span></h2>
   <div id="drive-banner" class="status"></div>
+  <p class="hint" id="drive-sa-email"></p>
 
-  <label for="google_client_id">Google OAuth Client ID</label>
-  <input type="text" id="google_client_id" placeholder="xxxx.apps.googleusercontent.com">
-  <label for="google_client_secret">Google OAuth Client Secret <span id="google-secret-badge" class="badge"></span></label>
-  <input type="password" id="google_client_secret" placeholder="(unchanged)">
-  <p class="hint">Saved with the main Save button above. Redirect URI to register in Google Cloud Console: <code>{{ redirect_uri }}</code></p>
-
-  <p>
-    <button type="button" id="connect-btn" onclick="location.href='/api/settings/rclone/drive/oauth/start'">Connect with Google Drive</button>
+  <p class="hint">
+    <strong>Recommended: service account.</strong> OAuth (below) grants
+    access to your whole Drive -- there's no per-folder scope. A service
+    account only ever sees folders explicitly shared with it, which is
+    genuine restriction, not just convention.
   </p>
+  <ol class="hint">
+    <li>Google Cloud Console -&gt; IAM &amp; Admin -&gt; Service Accounts -&gt; Create Service Account (no roles needed)</li>
+    <li>Open it -&gt; Keys -&gt; Add Key -&gt; Create new key -&gt; JSON (downloads a file)</li>
+    <li>In Google Drive, share your <code>Inbox</code> and <code>Library</code> folders with the service account's email (looks like <code>name@project.iam.gserviceaccount.com</code>), Editor access</li>
+    <li>Paste the downloaded JSON file's contents below</li>
+  </ol>
+  <label for="sa_key">Service account JSON key</label>
+  <textarea id="sa_key" placeholder='{"type":"service_account","client_email":"...","private_key":"...",...}'></textarea>
+  <button type="button" onclick="connectServiceAccount()">Connect</button>
+  <div id="sa-status" class="status"></div>
 
   <details>
-    <summary class="hint">No Google Cloud project? Use the paste-token method instead</summary>
-    <p class="hint">
-      This uses rclone's own bundled OAuth client instead of yours -- nothing to register:
+    <summary class="hint">Use OAuth instead (whole-Drive access, no folder restriction)</summary>
+    <label for="google_client_id">Google OAuth Client ID</label>
+    <input type="text" id="google_client_id" placeholder="xxxx.apps.googleusercontent.com">
+    <label for="google_client_secret">Google OAuth Client Secret <span id="google-secret-badge" class="badge"></span></label>
+    <input type="password" id="google_client_secret" placeholder="(unchanged)">
+    <p class="hint">Saved with the main Save button above. Redirect URI to register in Google Cloud Console: <code>{{ redirect_uri }}</code></p>
+    <p>
+      <button type="button" id="connect-btn" onclick="location.href='/api/settings/rclone/drive/oauth/start'">Connect with Google Drive</button>
     </p>
-    <ol class="hint">
-      <li>On a machine with a browser: install rclone, run <code>rclone authorize "drive"</code></li>
-      <li>Log into Google there and approve access</li>
-      <li>Copy the JSON token it prints and paste it below</li>
-    </ol>
-    <label for="drive_token">Pasted token</label>
-    <textarea id="drive_token" placeholder='{"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}'></textarea>
-    <button type="button" onclick="connectDrive()">Connect</button>
-    <div id="drive-status" class="status"></div>
+
+    <details>
+      <summary class="hint">No Google Cloud project? Use the paste-token method instead</summary>
+      <p class="hint">
+        This uses rclone's own bundled OAuth client instead of yours -- nothing to register:
+      </p>
+      <ol class="hint">
+        <li>On a machine with a browser: install rclone, run <code>rclone authorize "drive"</code></li>
+        <li>Log into Google there and approve access</li>
+        <li>Copy the JSON token it prints and paste it below</li>
+      </ol>
+      <label for="drive_token">Pasted token</label>
+      <textarea id="drive_token" placeholder='{"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}'></textarea>
+      <button type="button" onclick="connectDrive()">Connect</button>
+      <div id="drive-status" class="status"></div>
+    </details>
   </details>
 </section>
 
@@ -113,6 +133,19 @@ async function loadSettings() {
   setBadge('google-secret-badge', s.GOOGLE_OAUTH_CLIENT_SECRET.is_set);
 
   setBadge('drive-badge', s.rclone_drive.configured, 'connected', 'not connected');
+  const methodEl = document.getElementById('drive-method-badge');
+  const emailEl = document.getElementById('drive-sa-email');
+  if (s.rclone_drive.auth_method === 'service_account') {
+    methodEl.textContent = 'service account (restricted)';
+    methodEl.className = 'badge set';
+  } else if (s.rclone_drive.auth_method === 'oauth') {
+    methodEl.textContent = 'oauth (whole drive)';
+    methodEl.className = 'badge unset';
+  } else {
+    methodEl.textContent = '';
+  }
+  emailEl.textContent = s.rclone_drive.service_account_email
+    ? 'Connected as ' + s.rclone_drive.service_account_email : '';
 
   const connectBtn = document.getElementById('connect-btn');
   connectBtn.disabled = !s.rclone_drive.oauth_client_configured;
@@ -172,6 +205,27 @@ async function saveSettings() {
     document.getElementById('immich_key').value = '';
     document.getElementById('upload_key').value = '';
     document.getElementById('google_client_secret').value = '';
+    await loadSettings();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'status err';
+  }
+}
+
+async function connectServiceAccount() {
+  const statusEl = document.getElementById('sa-status');
+  const key = document.getElementById('sa_key').value;
+  try {
+    const r = await fetch('/api/settings/rclone/drive/service-account', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    statusEl.textContent = 'Connected as ' + data.service_account_email + '.';
+    statusEl.className = 'status ok';
+    document.getElementById('sa_key').value = '';
     await loadSettings();
   } catch (e) {
     statusEl.textContent = 'Error: ' + e.message;

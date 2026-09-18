@@ -78,13 +78,19 @@ needs to know, both from PLAN.md:
 
 - **OAuth client created** (Client ID/Secret in the `settings` DB table, not
   git) — redirect URI `https://audioman.home.zamia.co.uk/api/settings/rclone/drive/oauth/callback`.
-  Consent screen reached and approved once already; the rclone-wizard bug
-  above ate that authorization code, so it needs re-approving from
-  `/settings` → Connect with Google Drive.
-- Folder-level restriction was asked about: Drive OAuth scopes are
-  all-or-nothing (no per-folder scope). Real restriction needs a **service
-  account** instead (share only `Inbox`/`Library` with its email) — not
-  switched to yet, current setup is full-Drive-access OAuth.
+  Connected successfully once the rclone-wizard bug above was fixed.
+- **Folder-level restriction**: OAuth scopes are all-or-nothing (no
+  per-folder scope), so a service-account option was added to the settings
+  page as the recommended path — `POST /api/settings/rclone/drive/service-account`
+  (paste the downloaded JSON key; validated for `type: service_account` +
+  `client_email` before writing). The key is stored as its own file
+  (`/etc/audio-manager/gdrive-service-account.json`, 600 root:root), not
+  inline in rclone.conf, since unlike an OAuth token it doesn't expire.
+  `rclone config create` on an existing remote fully replaces it (confirmed
+  by hand), so switching auth methods never leaves stale OAuth fields mixed
+  in. Not yet switched over — needs a service account created in Cloud
+  Console and the `Inbox`/`Library` folders shared with its email; the
+  OAuth connection still works in the meantime.
 
 ## NAS
 

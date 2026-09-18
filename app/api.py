@@ -699,12 +699,27 @@ def _rclone_drive_status():
         )
     except (subprocess.SubprocessError, OSError):
         return {"configured": False}
-    configured = result.returncode == 0 and "token = " in result.stdout
-    return {
-        "configured": configured,
+    has_token = result.returncode == 0 and "token = " in result.stdout
+    has_service_account = result.returncode == 0 and "service_account_file = " in result.stdout
+    auth_method = "service_account" if has_service_account else ("oauth" if has_token else None)
+    status = {
+        "configured": has_token or has_service_account,
+        "auth_method": auth_method,
         "remote": Config.RCLONE_DRIVE_REMOTE,
         "oauth_client_configured": bool(get_config("GOOGLE_OAUTH_CLIENT_ID")),
     }
+    if has_service_account:
+        status["service_account_email"] = _service_account_email()
+    return status
+
+
+def _service_account_email():
+    import json as json_mod
+    try:
+        with open(SERVICE_ACCOUNT_KEY_PATH) as f:
+            return json_mod.load(f).get("client_email")
+    except (OSError, ValueError):
+        return None
 
 
 class RcloneConfigError(Exception):
@@ -724,13 +739,15 @@ _DRIVE_WIZARD_ANSWERS = {
 }
 
 
-def _write_rclone_token(token_json, client_id=None, client_secret=None):
+def _write_rclone_drive_config(**params):
     """
-    Writes an OAuth token into the `gdrive` remote's rclone config --
-    shared by both connect paths below. client_id/client_secret are
-    only passed for the redirect flow (our own registered app); the
-    paste-token flow omits them so rclone falls back to its own
-    bundled default client, which is what obtained that token.
+    (Re)creates the `gdrive` remote with the given rclone `drive`
+    backend params (token+client_id/secret for OAuth, or
+    service_account_file for a service account) and drives the
+    post-config wizard to completion. `rclone config create` on an
+    existing remote fully replaces it -- confirmed by hand, not just
+    assumed -- so switching auth methods never leaves stale fields
+    (e.g. an old token) mixed in with a new service_account_file.
 
     Raises RcloneConfigError on failure or an unrecognized wizard
     question (never silently answers something we don't have a
@@ -741,11 +758,9 @@ def _write_rclone_token(token_json, client_id=None, client_secret=None):
 
     remote = Config.RCLONE_DRIVE_REMOTE
     cmd = ["rclone", "config", "create", remote, "drive", "--non-interactive"]
-    if client_id:
-        cmd += ["client_id", client_id]
-    if client_secret:
-        cmd += ["client_secret", client_secret]
-    cmd += ["token", token_json]
+    for key, value in params.items():
+        if value:
+            cmd += [key, value]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
@@ -796,7 +811,51 @@ def connect_rclone_drive():
 
     import subprocess
     try:
-        _write_rclone_token(token)
+        _write_rclone_drive_config(token=token)
+    except (subprocess.SubprocessError, OSError) as e:
+        return jsonify({"error": f"rclone invocation failed: {e}"}), 500
+    except RcloneConfigError as e:
+        return jsonify({"error": f"rclone config create failed: {e}"}), 400
+
+    return jsonify(_rclone_drive_status())
+
+
+SERVICE_ACCOUNT_KEY_PATH = "/etc/audio-manager/gdrive-service-account.json"
+
+
+@bp.post("/settings/rclone/drive/service-account")
+def connect_rclone_drive_service_account():
+    """
+    Switches the `gdrive` remote to a service account instead of
+    OAuth-as-you. Unlike OAuth (whole-Drive access, no per-folder
+    scope), a service account only ever sees folders explicitly
+    shared with its own email address -- genuine folder-level
+    restriction, not just rclone-side convention. The key is a
+    long-lived credential (doesn't expire the way an OAuth token
+    does), so it's stored as its own file, not inline in rclone.conf.
+    """
+    import json as json_mod
+    import subprocess
+
+    data = request.get_json() or {}
+    raw_key = (data.get("key") or "").strip()
+    if not raw_key:
+        return jsonify({"error": "key is required (the full JSON key file content)"}), 400
+
+    try:
+        parsed = json_mod.loads(raw_key)
+    except ValueError:
+        return jsonify({"error": "not valid JSON"}), 400
+    if parsed.get("type") != "service_account" or "client_email" not in parsed:
+        return jsonify({"error": "doesn't look like a Google service account key (expected type=service_account, client_email)"}), 400
+
+    os.makedirs(os.path.dirname(SERVICE_ACCOUNT_KEY_PATH), exist_ok=True)
+    with open(SERVICE_ACCOUNT_KEY_PATH, "w") as f:
+        f.write(raw_key)
+    os.chmod(SERVICE_ACCOUNT_KEY_PATH, 0o600)
+
+    try:
+        _write_rclone_drive_config(service_account_file=SERVICE_ACCOUNT_KEY_PATH)
     except (subprocess.SubprocessError, OSError) as e:
         return jsonify({"error": f"rclone invocation failed: {e}"}), 500
     except RcloneConfigError as e:
@@ -894,7 +953,7 @@ def rclone_drive_oauth_callback():
 
     import subprocess
     try:
-        _write_rclone_token(token_json, client_id=client_id, client_secret=client_secret)
+        _write_rclone_drive_config(token=token_json, client_id=client_id, client_secret=client_secret)
     except (subprocess.SubprocessError, OSError, RcloneConfigError):
         return redirect("/settings?drive_error=rclone_config_failed")
 
