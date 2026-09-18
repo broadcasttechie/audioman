@@ -585,6 +585,34 @@ def list_tags():
     return jsonify([{"id": t.id, "name": t.name} for t in Tag.query.all()])
 
 
+@bp.post("/tags")
+def create_tag():
+    """
+    Get-or-create by name -- the review screen's tag picker calls this
+    for a typed name with no matching existing tag, and wants back
+    whichever tag now has that name rather than a 400 on a race with
+    itself (e.g. adding the same new tag on two resources back to back).
+    """
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+
+    existing = Tag.query.filter_by(name=name).first()
+    if existing:
+        return jsonify({"id": existing.id, "name": existing.name})
+
+    tag = Tag(name=name)
+    db.session.add(tag)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        existing = Tag.query.filter_by(name=name).first()
+        return jsonify({"id": existing.id, "name": existing.name})
+    return jsonify({"id": tag.id, "name": tag.name}), 201
+
+
 # --- Jobs: same trigger for scheduled runs and manual "run now" ---
 
 JOB_REGISTRY = {}  # populated by jobs/__init__.py at import time
