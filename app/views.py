@@ -7,11 +7,21 @@ ui_bp = Blueprint("ui", __name__)
 
 @ui_bp.get("/")
 def index():
-    # No review-queue UI yet (PLAN.md section 7) -- settings is the
-    # only page that exists so far.
-    return redirect(url_for("ui.settings_page"))
+    return redirect(url_for("ui.review_queue"))
+
+
+@ui_bp.get("/review")
+def review_queue():
+    return render_template("review_queue.html", active_tab="review")
+
+
+@ui_bp.get("/library")
+def library():
+    return render_template("library.html", active_tab="library")
 
 
 @ui_bp.get("/settings")
 def settings_page():
-    return render_template("settings.html", redirect_uri=Config.GOOGLE_OAUTH_REDIRECT_URI)
+    return render_template(
+        "settings.html", active_tab="settings", redirect_uri=Config.GOOGLE_OAUTH_REDIRECT_URI,
+    )

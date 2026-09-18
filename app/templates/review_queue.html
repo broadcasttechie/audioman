@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Review{% endblock %}
+{% block head %}
+<style>
+  .queue-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
+  .queue-count { font-size: 0.85rem; opacity: 0.7; }
+  .card {
+    display: block; border: 1px solid #8884; border-radius: 8px; padding: 0.9rem 1rem;
+    margin-bottom: 0.75rem; text-decoration: none; color: inherit;
+  }
+  .card:active { background: #8881; }
+  .card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+  .card-filename { font-weight: 600; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-duration { font-size: 0.85rem; opacity: 0.7; white-space: nowrap; }
+  .card-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 0.4rem; font-size: 0.8rem; opacity: 0.7; }
+  .card-icons { display: flex; gap: 0.5rem; }
+  .empty-state { text-align: center; padding: 3rem 1rem; opacity: 0.7; }
+  .empty-state .icon { font-size: 2.5rem; display: block; margin-bottom: 0.5rem; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="queue-header">
+  <h1>Review Queue</h1>
+  <span class="queue-count" id="queue-count"></span>
+</div>
+<div id="queue-list" class="status">Loading...</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function formatDuration(seconds) {
+  if (!seconds && seconds !== 0) return '';
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return m + ':' + String(s).padStart(2, '0');
+}
+
+function formatCapturedAt(iso, source) {
+  if (!iso) return 'No timestamp';
+  const d = new Date(iso);
+  const formatted = d.toLocaleString(undefined, {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  });
+  return source === 'dawarich-inferred' ? formatted + ' (inferred)' : formatted;
+}
+
+async function loadQueue() {
+  const listEl = document.getElementById('queue-list');
+  const countEl = document.getElementById('queue-count');
+  try {
+    const r = await fetch('/api/resources?status=pending-review&limit=200');
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+
+    countEl.textContent = data.total === 1 ? '1 to review' : data.total + ' to review';
+
+    if (data.resources.length === 0) {
+      listEl.className = '';
+      listEl.innerHTML = '<div class="empty-state"><span class="icon">🎉</span>Nothing to review right now.</div>';
+      return;
+    }
+
+    listEl.className = '';
+    listEl.innerHTML = '';
+    for (const res of data.resources) {
+      const icons = [];
+      if (res.location || res.has_track) icons.push('📍');
+      if (res.has_photos) icons.push('📷');
+      if (!res.captured_at) icons.push('❓');
+
+      const a = document.createElement('a');
+      a.className = 'card';
+      a.href = '/review/' + res.id;
+
+      const top = document.createElement('div');
+      top.className = 'card-top';
+      const filenameSpan = document.createElement('span');
+      filenameSpan.className = 'card-filename';
+      filenameSpan.textContent = res.filename;  // untrusted -- textContent, never innerHTML
+      const durationSpan = document.createElement('span');
+      durationSpan.className = 'card-duration';
+      durationSpan.textContent = formatDuration(res.duration_seconds);
+      top.append(filenameSpan, durationSpan);
+
+      const meta = document.createElement('div');
+      meta.className = 'card-meta';
+      const capturedSpan = document.createElement('span');
+      capturedSpan.textContent = formatCapturedAt(res.captured_at, res.captured_at_source);
+      const iconsSpan = document.createElement('span');
+      iconsSpan.className = 'card-icons';
+      iconsSpan.textContent = icons.join(' ');
+      meta.append(capturedSpan, iconsSpan);
+
+      a.append(top, meta);
+      listEl.append(a);
+    }
+  } catch (e) {
+    listEl.textContent = 'Error: ' + e.message;
+    listEl.className = 'status err';
+  }
+}
+
+loadQueue();
+</script>
+{% endblock %}

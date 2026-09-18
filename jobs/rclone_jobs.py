@@ -16,6 +16,18 @@ from app.models import PendingUpload, FileEvent, JobRun
 from .ingest import ingest_staged_file, _fail
 
 
+def _cmd_error_detail(e):
+    """
+    str(CalledProcessError) is just "Command '[...]' returned non-zero
+    exit status N" -- no stderr, which is the part that actually says
+    why (e.g. Google's "insufficientFilePermissions"). First noticed
+    this the hard way debugging a real ingest failure with nothing
+    useful in file_events/JobRun to go on.
+    """
+    stderr = getattr(e, "stderr", None)
+    return f"{e}: {stderr.strip()}" if stderr else str(e)
+
+
 def _record_run(job_name, status, log_tail=""):
     run = JobRun.query.get(job_name) or JobRun(job_name=job_name)
     run.last_run_at = datetime.utcnow()
@@ -46,8 +58,9 @@ def drive_inbox_pull():
     try:
         entries = _rclone_lsjson(remote_path)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        _record_run("drive-inbox-pull", "error", str(e))
-        return {"status": "error", "detail": str(e)}
+        detail = _cmd_error_detail(e)
+        _record_run("drive-inbox-pull", "error", detail)
+        return {"status": "error", "detail": detail}
 
     pulled, failed = [], []
     now = datetime.utcnow()
@@ -75,7 +88,7 @@ def drive_inbox_pull():
                     failed.append(path)
                     db.session.add(FileEvent(
                         event_type="failed",
-                        detail=f"rclone move failed for {path}, will retry next run: {e}",
+                        detail=f"rclone move failed for {path}, will retry next run: {_cmd_error_detail(e)}",
                     ))
                     db.session.commit()
                     continue
@@ -122,8 +135,9 @@ def nas_to_drive_library():
             timeout=Config.RCLONE_TRANSFER_TIMEOUT_SECONDS,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        _record_run("nas-to-drive-library", "error", str(e))
-        return {"status": "error", "detail": str(e)}
+        detail = _cmd_error_detail(e)
+        _record_run("nas-to-drive-library", "error", detail)
+        return {"status": "error", "detail": detail}
 
     _record_run("nas-to-drive-library", "success")
     return {"status": "success"}
@@ -139,8 +153,9 @@ def library_verify():
             timeout=Config.RCLONE_TRANSFER_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as e:
-        _record_run("library-verify", "error", str(e))
-        return {"status": "error", "detail": str(e)}
+        detail = _cmd_error_detail(e)
+        _record_run("library-verify", "error", detail)
+        return {"status": "error", "detail": detail}
 
     status = "success" if result.returncode == 0 else "partial"
     _record_run("library-verify", status, result.stdout + result.stderr)
