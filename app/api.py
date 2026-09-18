@@ -700,7 +700,82 @@ def _rclone_drive_status():
     except (subprocess.SubprocessError, OSError):
         return {"configured": False}
     configured = result.returncode == 0 and "token = " in result.stdout
-    return {"configured": configured, "remote": Config.RCLONE_DRIVE_REMOTE}
+    return {
+        "configured": configured,
+        "remote": Config.RCLONE_DRIVE_REMOTE,
+        "oauth_client_configured": bool(get_config("GOOGLE_OAUTH_CLIENT_ID")),
+    }
+
+
+class RcloneConfigError(Exception):
+    pass
+
+
+# Even with --non-interactive and a token supplied up front, rclone's
+# `drive` backend still walks a short post-config wizard (confirmed by
+# hand against this rclone version -- not documented anywhere as a
+# fixed sequence, so this is deliberately a lookup by field name, not
+# by position, and unknown questions abort rather than guess):
+# "already have a token, refresh it now?" -> no, it's fresh from the
+# OAuth exchange we just did; "configure as a Shared/Team Drive?" -> no.
+_DRIVE_WIZARD_ANSWERS = {
+    "config_refresh_token": "false",
+    "config_change_team_drive": "false",
+}
+
+
+def _write_rclone_token(token_json, client_id=None, client_secret=None):
+    """
+    Writes an OAuth token into the `gdrive` remote's rclone config --
+    shared by both connect paths below. client_id/client_secret are
+    only passed for the redirect flow (our own registered app); the
+    paste-token flow omits them so rclone falls back to its own
+    bundled default client, which is what obtained that token.
+
+    Raises RcloneConfigError on failure or an unrecognized wizard
+    question (never silently answers something we don't have a
+    considered default for).
+    """
+    import json as json_mod
+    import subprocess
+
+    remote = Config.RCLONE_DRIVE_REMOTE
+    cmd = ["rclone", "config", "create", remote, "drive", "--non-interactive"]
+    if client_id:
+        cmd += ["client_id", client_id]
+    if client_secret:
+        cmd += ["client_secret", client_secret]
+    cmd += ["token", token_json]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RcloneConfigError(result.stderr.strip())
+
+    # Drive the post-config wizard (see _DRIVE_WIZARD_ANSWERS) until
+    # rclone reports an empty State, meaning the remote is complete.
+    for _ in range(10):  # hard ceiling -- never loop indefinitely
+        try:
+            reply = json_mod.loads(result.stdout)
+        except ValueError:
+            raise RcloneConfigError(f"unexpected rclone output: {result.stdout[:200]}")
+
+        state = reply.get("State") or ""
+        if not state:
+            return
+
+        option_name = (reply.get("Option") or {}).get("Name")
+        if option_name not in _DRIVE_WIZARD_ANSWERS:
+            raise RcloneConfigError(f"unhandled rclone config question: {option_name!r}")
+
+        result = subprocess.run(
+            ["rclone", "config", "update", remote, "--non-interactive", "--continue",
+             "--state", state, "--result", _DRIVE_WIZARD_ANSWERS[option_name]],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            raise RcloneConfigError(result.stderr.strip())
+
+    raise RcloneConfigError("rclone config wizard did not terminate")
 
 
 @bp.post("/settings/rclone/drive")
@@ -714,21 +789,113 @@ def connect_rclone_drive():
     config, the same as `rclone config create gdrive drive token '<pasted>'`
     would do interactively.
     """
-    import subprocess
     data = request.get_json() or {}
     token = (data.get("token") or "").strip()
     if not token:
         return jsonify({"error": "token is required (paste the output of 'rclone authorize \"drive\"')"}), 400
 
+    import subprocess
     try:
-        result = subprocess.run(
-            ["rclone", "config", "create", Config.RCLONE_DRIVE_REMOTE, "drive", "token", token],
-            capture_output=True, text=True, timeout=30,
-        )
+        _write_rclone_token(token)
     except (subprocess.SubprocessError, OSError) as e:
         return jsonify({"error": f"rclone invocation failed: {e}"}), 500
-
-    if result.returncode != 0:
-        return jsonify({"error": f"rclone config create failed: {result.stderr.strip()}"}), 400
+    except RcloneConfigError as e:
+        return jsonify({"error": f"rclone config create failed: {e}"}), 400
 
     return jsonify(_rclone_drive_status())
+
+
+GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+
+
+@bp.get("/settings/rclone/drive/oauth/start")
+def rclone_drive_oauth_start():
+    """
+    Redirects the browser to Google's consent screen using our own
+    registered OAuth client (settings page "Connect with Google Drive"
+    button) -- the alternative to the paste-token flow above. The
+    consent happens in the user's own browser/Google session; this
+    server never sees their Google credentials, only the resulting
+    authorization code (exchanged for a token in the callback below).
+    """
+    from flask import redirect, session
+    from urllib.parse import urlencode
+    import secrets as secrets_mod
+
+    client_id = get_config("GOOGLE_OAUTH_CLIENT_ID")
+    if not client_id:
+        return jsonify({"error": "set a Google OAuth Client ID/Secret first"}), 400
+
+    state = secrets_mod.token_urlsafe(24)
+    session["drive_oauth_state"] = state
+
+    params = {
+        "client_id": client_id,
+        "redirect_uri": Config.GOOGLE_OAUTH_REDIRECT_URI,
+        "response_type": "code",
+        "scope": GOOGLE_DRIVE_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    return redirect(f"{GOOGLE_AUTH_ENDPOINT}?{urlencode(params)}")
+
+
+@bp.get("/settings/rclone/drive/oauth/callback")
+def rclone_drive_oauth_callback():
+    """
+    Google redirects the user's browser here with an authorization
+    code after they approve. Exchanges it for a token server-side
+    (this is the one step that needs the client secret) and writes it
+    into rclone's config the same way the paste-token flow does.
+    """
+    import requests
+    from flask import redirect, session
+
+    error = request.args.get("error")
+    if error:
+        return redirect(f"/settings?drive_error={error}")
+
+    state = request.args.get("state")
+    if not state or state != session.pop("drive_oauth_state", None):
+        return redirect("/settings?drive_error=state_mismatch")
+
+    code = request.args.get("code")
+    client_id = get_config("GOOGLE_OAUTH_CLIENT_ID")
+    client_secret = get_config("GOOGLE_OAUTH_CLIENT_SECRET")
+
+    try:
+        resp = requests.post(GOOGLE_TOKEN_ENDPOINT, data={
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": Config.GOOGLE_OAUTH_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        }, timeout=Config.HTTP_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        tok = resp.json()
+    except requests.RequestException:
+        return redirect("/settings?drive_error=token_exchange_failed")
+
+    if "access_token" not in tok:
+        return redirect("/settings?drive_error=token_exchange_failed")
+
+    from datetime import datetime, timedelta
+    import json as json_mod
+    expiry = (datetime.utcnow() + timedelta(seconds=tok.get("expires_in", 3600))).isoformat() + "Z"
+    token_json = json_mod.dumps({
+        "access_token": tok["access_token"],
+        "token_type": tok.get("token_type", "Bearer"),
+        "refresh_token": tok.get("refresh_token"),
+        "expiry": expiry,
+    })
+
+    import subprocess
+    try:
+        _write_rclone_token(token_json, client_id=client_id, client_secret=client_secret)
+    except (subprocess.SubprocessError, OSError, RcloneConfigError):
+        return redirect("/settings?drive_error=rclone_config_failed")
+
+    return redirect("/settings?drive_connected=1")

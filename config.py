@@ -6,6 +6,15 @@ class Config:
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+    # Signs the session cookie used only for the OAuth CSRF state nonce
+    # (app/api.py rclone_drive_oauth_start/callback) -- nothing else in
+    # this app uses sessions. Browser only ever reaches this over HTTPS
+    # (nginx terminates TLS in front), so SESSION_COOKIE_SECURE is safe
+    # even though the nginx->Flask hop itself is plain HTTP.
+    SECRET_KEY = os.environ.get("SECRET_KEY", "")
+    SESSION_COOKIE_SECURE = True
+    SESSION_COOKIE_HTTPONLY = True
+
     # --- Storage paths ---
     NAS_LIBRARY_ROOT = os.environ.get("NAS_LIBRARY_ROOT", "/mnt/nas/audio")
     STAGING_DIR = os.environ.get("STAGING_DIR", "/var/lib/audio-manager/staging")
@@ -14,6 +23,18 @@ class Config:
     RCLONE_DRIVE_REMOTE = os.environ.get("RCLONE_DRIVE_REMOTE", "gdrive")
     DRIVE_INBOX_PATH = os.environ.get("DRIVE_INBOX_PATH", "Inbox")
     DRIVE_LIBRARY_PATH = os.environ.get("DRIVE_LIBRARY_PATH", "Library")
+
+    # --- Google OAuth client (for the settings-page "Connect with Google"
+    # redirect flow, app/api.py rclone_drive_oauth_*). A registered client
+    # is only needed for that flow -- the settings-page paste-token
+    # alternative uses rclone's own bundled client and needs neither of
+    # these. ---
+    GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
+    GOOGLE_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    GOOGLE_OAUTH_REDIRECT_URI = os.environ.get(
+        "GOOGLE_OAUTH_REDIRECT_URI",
+        "https://audioman.home.zamia.co.uk/api/settings/rclone/drive/oauth/callback",
+    )
 
     # --- Inbox stability check ---
     MIN_AGE_MINUTES = int(os.environ.get("MIN_AGE_MINUTES", 5))

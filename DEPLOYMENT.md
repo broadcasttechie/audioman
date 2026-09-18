@@ -65,6 +65,26 @@ needs to know, both from PLAN.md:
   (not in the original zip).
 - Neither unit had `EnvironmentFile=` wired up — added
   `/etc/audio-manager/audio-manager.env` to both.
+- `rclone config create ... --non-interactive` with a token supplied still
+  walks a short post-config wizard for the `drive` backend (confirmed by
+  hand: "already have a token, refresh it now?" then "configure as a
+  Shared/Team Drive?") rather than completing in one call — the first real
+  OAuth callback hung on this for 30s and 500'd. `_write_rclone_token` in
+  `app/api.py` now drives rclone's `--continue --state --result` protocol
+  properly (answering "no" to both, with a hard iteration ceiling and no
+  guessing on an unrecognized question).
+
+## Google Drive
+
+- **OAuth client created** (Client ID/Secret in the `settings` DB table, not
+  git) — redirect URI `https://audioman.home.zamia.co.uk/api/settings/rclone/drive/oauth/callback`.
+  Consent screen reached and approved once already; the rclone-wizard bug
+  above ate that authorization code, so it needs re-approving from
+  `/settings` → Connect with Google Drive.
+- Folder-level restriction was asked about: Drive OAuth scopes are
+  all-or-nothing (no per-folder scope). Real restriction needs a **service
+  account** instead (share only `Inbox`/`Library` with its email) — not
+  switched to yet, current setup is full-Drive-access OAuth.
 
 ## NAS
 
@@ -89,16 +109,14 @@ needs to know, both from PLAN.md:
 - **UniFi**: DHCP reservation for the MAC above, plus local DNS
   `audioman.home.zamia.co.uk` → reserved IP (per cluster convention: LAN-only
   DNS, no public record). I don't have UniFi access from here.
-- **Google Drive OAuth** — run `rclone authorize "drive"` on a machine with a
-  browser, log into Google there, paste the resulting token into the new
-  Settings page's Google Drive section. Requires your consent in a real
-  Google auth flow; I won't drive this myself.
+- **Google Drive OAuth** — client is registered, just needs re-approval at
+  `/settings` → Connect with Google Drive (see "Google Drive" section
+  above for why the first attempt didn't stick). Requires your consent in a
+  real Google auth flow; I won't drive this myself.
 - **Dawarich API key** (CT 128, pmx2, guessed at `http://192.168.1.143:3000`
-  — port not confirmed) and **Immich API key** (CT 131, pmx1, guessed at
-  `http://192.168.1.186:2283`) — I have infra access to both containers but
-  didn't generate keys inside someone else's already-running service without
-  checking first. Say the word and I will, or generate them yourself via each
-  app's UI and paste them into the Settings page.
+  — port not confirmed) — still needed; **Immich's is now set** (entered via
+  the settings page). Same offer as before: I have infra access to Dawarich
+  and could generate its key myself, but haven't without checking first.
 - **PBS backup + ZFS replication**: deliberately deferred — the NAS bind
   mount (once added) makes this guest ineligible for replication, same as
   Immich already is. Worth folding into `/etc/pve/jobs.cfg` once the NAS

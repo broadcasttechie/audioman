@@ -20,6 +20,7 @@
   .row input { flex: 1; }
   button { padding: 0.4rem 0.9rem; border-radius: 4px; border: 1px solid #8886; background: #8881; cursor: pointer; }
   button:hover { background: #8882; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   .badge { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; }
   .badge.set { background: #2a72; color: inherit; }
   .badge.unset { background: #8884; color: inherit; }
@@ -66,18 +67,33 @@
 
 <section>
   <h2>Google Drive <span id="drive-badge" class="badge"></span></h2>
-  <p class="hint">
-    This server has no browser, so the OAuth grant has to happen on one of yours:
+  <div id="drive-banner" class="status"></div>
+
+  <label for="google_client_id">Google OAuth Client ID</label>
+  <input type="text" id="google_client_id" placeholder="xxxx.apps.googleusercontent.com">
+  <label for="google_client_secret">Google OAuth Client Secret <span id="google-secret-badge" class="badge"></span></label>
+  <input type="password" id="google_client_secret" placeholder="(unchanged)">
+  <p class="hint">Saved with the main Save button above. Redirect URI to register in Google Cloud Console: <code>{{ redirect_uri }}</code></p>
+
+  <p>
+    <button type="button" id="connect-btn" onclick="location.href='/api/settings/rclone/drive/oauth/start'">Connect with Google Drive</button>
   </p>
-  <ol class="hint">
-    <li>On a machine with a browser: install rclone, run <code>rclone authorize "drive"</code></li>
-    <li>Log into Google there and approve access</li>
-    <li>Copy the JSON token it prints and paste it below</li>
-  </ol>
-  <label for="drive_token">Pasted token</label>
-  <textarea id="drive_token" placeholder='{"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}'></textarea>
-  <button type="button" onclick="connectDrive()">Connect</button>
-  <div id="drive-status" class="status"></div>
+
+  <details>
+    <summary class="hint">No Google Cloud project? Use the paste-token method instead</summary>
+    <p class="hint">
+      This uses rclone's own bundled OAuth client instead of yours -- nothing to register:
+    </p>
+    <ol class="hint">
+      <li>On a machine with a browser: install rclone, run <code>rclone authorize "drive"</code></li>
+      <li>Log into Google there and approve access</li>
+      <li>Copy the JSON token it prints and paste it below</li>
+    </ol>
+    <label for="drive_token">Pasted token</label>
+    <textarea id="drive_token" placeholder='{"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}'></textarea>
+    <button type="button" onclick="connectDrive()">Connect</button>
+    <div id="drive-status" class="status"></div>
+  </details>
 </section>
 
 <script>
@@ -93,7 +109,29 @@ async function loadSettings() {
 
   setBadge('upload-badge', s.UPLOAD_API_KEY.is_set);
 
+  document.getElementById('google_client_id').value = s.GOOGLE_OAUTH_CLIENT_ID.value || '';
+  setBadge('google-secret-badge', s.GOOGLE_OAUTH_CLIENT_SECRET.is_set);
+
   setBadge('drive-badge', s.rclone_drive.configured, 'connected', 'not connected');
+
+  const connectBtn = document.getElementById('connect-btn');
+  connectBtn.disabled = !s.rclone_drive.oauth_client_configured;
+  connectBtn.title = s.rclone_drive.oauth_client_configured ? '' : 'Save a Client ID/Secret first';
+}
+
+function showDriveBanner() {
+  const params = new URLSearchParams(location.search);
+  const banner = document.getElementById('drive-banner');
+  if (params.get('drive_connected')) {
+    banner.textContent = 'Google Drive connected.';
+    banner.className = 'status ok';
+  } else if (params.get('drive_error')) {
+    banner.textContent = 'Connection failed: ' + params.get('drive_error');
+    banner.className = 'status err';
+  }
+  if (params.has('drive_connected') || params.has('drive_error')) {
+    history.replaceState({}, '', location.pathname);
+  }
 }
 
 function setBadge(id, isSet, onText = 'set', offText = 'not set') {
@@ -117,6 +155,8 @@ async function saveSettings() {
     IMMICH_API_URL: document.getElementById('immich_url').value,
     IMMICH_API_KEY: document.getElementById('immich_key').value,
     UPLOAD_API_KEY: document.getElementById('upload_key').value,
+    GOOGLE_OAUTH_CLIENT_ID: document.getElementById('google_client_id').value,
+    GOOGLE_OAUTH_CLIENT_SECRET: document.getElementById('google_client_secret').value,
   };
   const statusEl = document.getElementById('save-status');
   try {
@@ -131,6 +171,7 @@ async function saveSettings() {
     document.getElementById('dawarich_key').value = '';
     document.getElementById('immich_key').value = '';
     document.getElementById('upload_key').value = '';
+    document.getElementById('google_client_secret').value = '';
     await loadSettings();
   } catch (e) {
     statusEl.textContent = 'Error: ' + e.message;
@@ -160,6 +201,7 @@ async function connectDrive() {
 }
 
 loadSettings();
+showDriveBanner();
 </script>
 </body>
 </html>
