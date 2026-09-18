@@ -143,7 +143,8 @@ async function loadSettings() {
 
   document.getElementById('root-folder-section').style.display = s.rclone_drive.configured ? '' : 'none';
   document.getElementById('root-folder-current').textContent = s.rclone_drive.root_folder_name
-    ? '(currently: ' + s.rclone_drive.root_folder_name + ')' : '';
+    ? '(currently: ' + s.rclone_drive.root_folder_name + ')'
+    : s.rclone_drive.shared_with_me ? '(currently: folders shared directly, e.g. Inbox/Library each on their own)' : '';
   if (s.rclone_drive.configured && folderBreadcrumb.length === 0) {
     resetFolderBrowser();
   }

@@ -713,7 +713,11 @@ def _rclone_drive_status():
     if status["configured"]:
         for line in result.stdout.splitlines():
             if line.startswith("root_folder_id"):
-                status["root_folder_id"] = line.split("=", 1)[1].strip()
+                value = line.split("=", 1)[1].strip()
+                if value:
+                    status["root_folder_id"] = value
+            elif line.startswith("shared_with_me"):
+                status["shared_with_me"] = line.split("=", 1)[1].strip() == "true"
         if "root_folder_id" in status:
             # Display-only cache set alongside root_folder_id itself
             # (see set_rclone_drive_root below) -- not re-fetched from
