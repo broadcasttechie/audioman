@@ -1,6 +1,320 @@
 {% extends "base.html" %}
 {% block title_suffix %} — Library{% endblock %}
+{% block head %}
+<style>
+  .lib-header { display: flex; justify-content: space-between; align-items: baseline; }
+  .lib-count { font-size: 0.85rem; opacity: 0.7; }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0; }
+  .chips button { border-radius: 999px; padding: 0.3rem 0.85rem; font-size: 0.85rem; }
+  .chips button.selected { background: #2a72; border-color: #2a7; font-weight: 600; }
+  details.filters { margin-bottom: 0.9rem; }
+  details.filters summary { cursor: pointer; font-size: 0.9rem; padding: 0.3rem 0; }
+  .filter-grid { display: grid; grid-template-columns: 1fr; gap: 0.1rem; margin-top: 0.4rem; }
+  @media (min-width: 480px) { .filter-grid { grid-template-columns: 1fr 1fr; column-gap: 0.75rem; } }
+  .tag-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.4rem; }
+  .tag-chip { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.15rem 0.55rem; border-radius: 999px; background: #8882; font-size: 0.8rem; }
+  .tag-chip button { padding: 0 0.15rem; border: none; background: none; font-size: 0.9rem; line-height: 1; }
+  .clear-link { font-size: 0.8rem; background: none; border: none; text-decoration: underline; padding: 0.4rem 0; }
+
+  .card { display: block; border: 1px solid #8884; border-radius: 8px; padding: 0.8rem 0.95rem; margin-bottom: 0.65rem; text-decoration: none; color: inherit; }
+  .card:active { background: #8881; }
+  .card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+  .card-filename { font-weight: 600; font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-duration { font-size: 0.82rem; opacity: 0.7; white-space: nowrap; }
+  .card-meta { margin-top: 0.3rem; font-size: 0.8rem; opacity: 0.75; }
+  .card-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.4rem; }
+  .card-tags span { font-size: 0.72rem; padding: 0.05rem 0.5rem; border-radius: 999px; background: #8882; }
+  .card-fail { margin-top: 0.4rem; font-size: 0.8rem; color: #d55; }
+  .empty-state { text-align: center; padding: 2.5rem 1rem; opacity: 0.75; }
+  #more { width: 100%; margin: 0.25rem 0 1rem; }
+</style>
+{% endblock %}
 {% block content %}
-<h1>Library</h1>
-<p class="hint">Not built yet — filed/failed/archived resources, filterable by status/category/project/tag, will live here.</p>
+<div class="lib-header">
+  <h1>Library</h1>
+  <span class="lib-count" id="lib-count"></span>
+</div>
+
+<input type="search" id="q" placeholder="Search filenames" autocomplete="off">
+
+<div class="chips" id="status-chips"></div>
+
+<details class="filters" id="filters">
+  <summary>Filters <span id="filter-badge" class="badge unset" hidden></span></summary>
+  <div class="filter-grid">
+    <div>
+      <label for="f-category">Category</label>
+      <select id="f-category"></select>
+    </div>
+    <div>
+      <label for="f-project">Project</label>
+      <select id="f-project"></select>
+    </div>
+    <div>
+      <label for="f-sort">Sort</label>
+      <select id="f-sort">
+        <option value="captured">Captured date</option>
+        <option value="added">Recently added</option>
+      </select>
+    </div>
+    <div>
+      <label for="f-tag">Tags (must have all)</label>
+      <div class="tag-chips" id="tag-chips"></div>
+      <input type="text" id="f-tag" list="tag-suggestions" placeholder="Add tag, press Enter">
+      <datalist id="tag-suggestions"></datalist>
+    </div>
+  </div>
+  <button type="button" class="clear-link" id="clear-filters">Clear filters</button>
+</details>
+
+<div id="results" class="status">Loading...</div>
+<button type="button" id="more" hidden>Load more</button>
+{% endblock %}
+{% block scripts %}
+<script>
+const PAGE = 50;
+const STATUSES = [['filed', 'Filed'], ['failed', 'Failed'], ['archived', 'Archived'], ['', 'All']];
+
+let state = { status: 'filed', q: '', category: '', project_id: '', tags: [], sort: 'captured' };
+let offset = 0;
+let total = 0;
+let loadToken = 0;         // guards against a slow earlier response landing after a newer one
+let projectsById = {};
+
+const $ = id => document.getElementById(id);
+
+function el(tag, props = {}, children = []) {
+  const e = document.createElement(tag);
+  Object.entries(props).forEach(([k, v]) => {
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  });
+  children.forEach(c => e.append(c));   // append(), never innerHTML: filenames/tags are untrusted
+  return e;
+}
+
+function formatDuration(seconds) {
+  if (!seconds && seconds !== 0) return '';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.round(seconds % 60);
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0');
+}
+
+// Date only, on purpose: the timezone handling of captured_at is still an
+// open contract (PLAN.md 17.5), and a date is the least exposed to it.
+function formatDate(iso) {
+  if (!iso) return 'No timestamp';
+  return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// ---- state <-> URL, so the back button from a recording returns to the same view ----
+
+function readUrl() {
+  const p = new URLSearchParams(location.search);
+  if (p.has('status')) state.status = p.get('status');
+  state.q = p.get('q') || '';
+  state.category = p.get('category') || '';
+  state.project_id = p.get('project_id') || '';
+  state.tags = p.getAll('tag');
+  if (p.get('sort')) state.sort = p.get('sort');
+}
+
+function writeUrl() {
+  const p = new URLSearchParams();
+  p.set('status', state.status);
+  if (state.q) p.set('q', state.q);
+  if (state.category) p.set('category', state.category);
+  if (state.project_id) p.set('project_id', state.project_id);
+  state.tags.forEach(t => p.append('tag', t));
+  if (state.sort !== 'captured') p.set('sort', state.sort);
+  history.replaceState({}, '', '?' + p.toString());
+}
+
+function activeFilterCount() {
+  return (state.category ? 1 : 0) + (state.project_id ? 1 : 0) + state.tags.length;
+}
+
+// ---- controls ----
+
+function renderStatusChips() {
+  const row = $('status-chips');
+  row.innerHTML = '';
+  for (const [value, label] of STATUSES) {
+    row.append(el('button', {
+      type: 'button',
+      class: value === state.status ? 'selected' : '',
+      onclick: () => { state.status = value; refresh(); },
+    }, [label]));
+  }
+}
+
+function renderTagChips() {
+  const row = $('tag-chips');
+  row.innerHTML = '';
+  for (const tag of state.tags) {
+    row.append(el('span', { class: 'tag-chip' }, [tag, el('button', {
+      type: 'button',
+      onclick: () => { state.tags = state.tags.filter(t => t !== tag); refresh(); },
+    }, ['×'])]));
+  }
+}
+
+function syncControls() {
+  $('q').value = state.q;
+  $('f-category').value = state.category;
+  $('f-project').value = state.project_id;
+  $('f-sort').value = state.sort;
+  renderStatusChips();
+  renderTagChips();
+  const n = activeFilterCount();
+  $('filter-badge').hidden = n === 0;
+  $('filter-badge').textContent = n;
+}
+
+function fillSelect(select, firstLabel, options) {
+  select.innerHTML = '';
+  select.append(el('option', { value: '' }, [firstLabel]));
+  for (const [value, label] of options) select.append(el('option', { value }, [label]));
+}
+
+function refresh() {
+  writeUrl();
+  syncControls();
+  load(true);
+}
+
+function addTag() {
+  const input = $('f-tag');
+  const name = input.value.trim();
+  input.value = '';
+  if (!name) return;      // 'change' also fires on blur, often with nothing typed
+  if (!state.tags.includes(name)) state.tags.push(name);
+  refresh();
+}
+
+// ---- results ----
+
+function buildParams() {
+  const p = new URLSearchParams();
+  if (state.status) p.set('status', state.status);
+  if (state.category) p.set('category', state.category);
+  if (state.project_id) p.set('project_id', state.project_id);
+  state.tags.forEach(t => p.append('tag', t));
+  if (state.q) p.set('q', state.q);
+  p.set('sort', state.sort);
+  p.set('limit', PAGE);
+  p.set('offset', offset);
+  return p.toString();
+}
+
+function buildCard(res) {
+  const a = el('a', { class: 'card', href: '/review/' + res.id });
+
+  const top = el('div', { class: 'card-top' }, [
+    el('span', { class: 'card-filename' }, [res.filename]),
+    el('span', { class: 'card-duration' }, [formatDuration(res.duration_seconds)]),
+  ]);
+
+  const bits = [formatDate(res.captured_at)];
+  if (res.category) bits.push(res.category);
+  if (res.project_id && projectsById[res.project_id]) bits.push(projectsById[res.project_id].name);
+  if (res.status !== 'filed') bits.push(res.status);
+  a.append(top, el('div', { class: 'card-meta' }, [bits.join(' · ')]));
+
+  if (res.tags && res.tags.length) {
+    const shown = res.tags.slice(0, 5).map(t => el('span', {}, [t]));
+    if (res.tags.length > 5) shown.push(el('span', {}, ['+' + (res.tags.length - 5)]));
+    a.append(el('div', { class: 'card-tags' }, shown));
+  }
+
+  if (res.status === 'failed') {
+    const why = (res.failure_stage || 'unknown stage') + (res.failure_detail ? ': ' + res.failure_detail : '');
+    a.append(el('div', { class: 'card-fail' }, [why.length > 160 ? why.slice(0, 160) + '…' : why]));
+  }
+  return a;
+}
+
+async function load(reset) {
+  const token = ++loadToken;
+  const results = $('results');
+  if (reset) {
+    offset = 0;
+    results.className = 'status';
+    results.textContent = 'Loading...';
+    $('more').hidden = true;
+  }
+  try {
+    const r = await fetch('/api/resources?' + buildParams());
+    const data = await r.json();
+    if (token !== loadToken) return;              // a newer request superseded this one
+    if (!r.ok) throw new Error(data.error || r.statusText);
+
+    total = data.total;
+    $('lib-count').textContent = total === 1 ? '1 recording' : total + ' recordings';
+
+    if (reset) { results.className = ''; results.innerHTML = ''; }
+
+    if (reset && data.resources.length === 0) {
+      const empty = el('div', { class: 'empty-state' }, ['No recordings match.']);
+      if (activeFilterCount() || state.q) {
+        empty.append(el('div', {}, [el('button', {
+          type: 'button', class: 'clear-link',
+          onclick: () => { state.q = ''; state.category = ''; state.project_id = ''; state.tags = []; refresh(); },
+        }, ['Clear search and filters'])]));
+      }
+      results.append(empty);
+      return;
+    }
+
+    data.resources.forEach(res => results.append(buildCard(res)));
+    offset += data.resources.length;
+    $('more').hidden = offset >= total;
+  } catch (e) {
+    if (token !== loadToken) return;
+    results.className = 'status err';
+    results.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function init() {
+  readUrl();
+  try {
+    const [cats, projects, tags] = await Promise.all([
+      fetch('/api/categories').then(r => r.json()),
+      fetch('/api/projects').then(r => r.json()),
+      fetch('/api/tags').then(r => r.json()),
+    ]);
+    projects.forEach(p => { projectsById[p.id] = p; });
+    fillSelect($('f-category'), 'Any category', cats.map(c => [c.slug, c.label]));
+    fillSelect($('f-project'), 'Any project', [['none', '(no project)'], ...projects.map(p => [p.id, p.name])]);
+    tags.forEach(t => $('tag-suggestions').append(el('option', { value: t.name })));
+  } catch (e) {
+    // Filters degrade to "unavailable"; the list itself can still load.
+  }
+
+  $('q').addEventListener('input', debounce(() => { state.q = $('q').value.trim(); refresh(); }, 300));
+  $('f-category').addEventListener('change', ev => { state.category = ev.target.value; refresh(); });
+  $('f-project').addEventListener('change', ev => { state.project_id = ev.target.value; refresh(); });
+  $('f-sort').addEventListener('change', ev => { state.sort = ev.target.value; refresh(); });
+  $('f-tag').addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); addTag(); } });
+  $('f-tag').addEventListener('change', addTag);      // picking a suggestion from the datalist
+  $('clear-filters').addEventListener('click', () => {
+    state.category = ''; state.project_id = ''; state.tags = []; refresh();
+  });
+  $('more').addEventListener('click', () => load(false));
+
+  if (activeFilterCount()) $('filters').open = true;
+  syncControls();
+  load(true);
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+init();
+</script>
 {% endblock %}

@@ -1,9 +1,10 @@
 from flask import Blueprint, jsonify, request, send_file, abort
 import os
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from .extensions import db
-from .models import Resource, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting
+from .models import Resource, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint
 from .settings import get_config, set_config, settings_snapshot, SECRET_KEYS
 from config import Config
 
@@ -20,17 +21,57 @@ def list_resources():
     response and a slow query. limit caps at 200/defaults to 50;
     offset for simple pagination (fine at this scale — a cursor would
     only matter at a size this app isn't going to reach).
+
+    Filters (all optional, combined with AND): `status` (comma-separated
+    for several), `category`, `project_id` (or `none` for no project),
+    `tag` (repeatable -- must carry every one named), `q` (filename
+    substring, case-insensitive). `sort=captured` orders by captured_at,
+    newest first, recordings with no timestamp last; the default is
+    newest-added first.
     """
-    status = request.args.get("status")
     limit = min(int(request.args.get("limit", 50)), 200)
     offset = int(request.args.get("offset", 0))
 
     query = Resource.query
-    if status:
-        query = query.filter_by(status=status)
+
+    statuses = [s for s in (request.args.get("status") or "").split(",") if s]
+    if statuses:
+        query = query.filter(Resource.status.in_(statuses))
+
+    category = request.args.get("category")
+    if category:
+        query = query.filter(Resource.category == category)
+
+    project_id = request.args.get("project_id")
+    if project_id == "none":
+        query = query.filter(Resource.project_id.is_(None))
+    elif project_id:
+        query = query.filter(Resource.project_id == project_id)
+
+    for tag_name in request.args.getlist("tag"):
+        query = query.filter(Resource.tags.any(Tag.name == tag_name))
+
+    q = (request.args.get("q") or "").strip()
+    if q:
+        query = query.filter(Resource.filename.icontains(q, autoescape=True))
 
     total = query.count()
-    resources = query.order_by(Resource.created_at.desc()).offset(offset).limit(limit).all()
+
+    if request.args.get("sort") == "captured":
+        order = (Resource.captured_at.desc().nullslast(), Resource.created_at.desc(), Resource.id)
+    else:
+        order = (Resource.created_at.desc(), Resource.id)  # id: stable paging on ties
+
+    # Eager-load what _resource_to_dict touches so a page of results is a
+    # handful of queries, not several per row.
+    resources = (
+        query.options(
+            selectinload(Resource.tags),
+            selectinload(Resource.location),
+            selectinload(Resource.photos),
+        )
+        .order_by(*order).offset(offset).limit(limit).all()
+    )
     return jsonify({
         "total": total,
         "limit": limit,
@@ -122,7 +163,10 @@ def _resource_to_dict(r: Resource):
             {"lat": r.location.lat, "lon": r.location.lon, "source": r.location.source}
             if r.location else None
         ),
-        "has_track": len(r.track_points) > 0,
+        # An existence check, not len(r.track_points): that would load every
+        # GPS point of every row just to answer yes/no, which matters once
+        # this is called for a page of results.
+        "has_track": TrackPoint.query.filter_by(resource_id=r.id).first() is not None,
         "has_photos": len(r.photos) > 0,
     }
     if r.status == "failed":
@@ -578,6 +622,13 @@ def create_project():
         db.session.rollback()
         return jsonify({"error": f"slug '{data['slug']}' is already in use"}), 400
     return jsonify({"id": p.id}), 201
+
+
+@bp.get("/categories")
+def list_categories():
+    # Config-backed for now; PLAN.md 17.1 makes this a table. Serving it
+    # from the API means pages stop carrying their own copy of the list.
+    return jsonify([{"slug": c, "label": c} for c in Config.CATEGORIES])
 
 
 @bp.get("/tags")
