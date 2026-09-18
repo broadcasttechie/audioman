@@ -3,7 +3,7 @@ import os
 from sqlalchemy.exc import IntegrityError
 
 from .extensions import db
-from .models import Resource, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export
+from .models import Resource, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting
 from .settings import get_config, set_config, settings_snapshot, SECRET_KEYS
 from config import Config
 
@@ -710,6 +710,17 @@ def _rclone_drive_status():
     }
     if has_service_account:
         status["service_account_email"] = _service_account_email()
+    if status["configured"]:
+        for line in result.stdout.splitlines():
+            if line.startswith("root_folder_id"):
+                status["root_folder_id"] = line.split("=", 1)[1].strip()
+        if "root_folder_id" in status:
+            # Display-only cache set alongside root_folder_id itself
+            # (see set_rclone_drive_root below) -- not re-fetched from
+            # Drive on every /api/settings call, just kept in sync.
+            cached = Setting.query.get("_ROOT_FOLDER_NAME")
+            if cached:
+                status["root_folder_name"] = cached.value
     return status
 
 
@@ -720,6 +731,78 @@ def _service_account_email():
             return json_mod.load(f).get("client_email")
     except (OSError, ValueError):
         return None
+
+
+@bp.get("/settings/rclone/drive/folders")
+def list_rclone_drive_folders():
+    """
+    Folder picker backend. With `parent_id`, lists that folder's
+    children (--drive-root-folder-id, a one-off flag -- never touches
+    the persisted remote config; only POST .../root-folder below does
+    that). With no `parent_id` (top level), what "top level" means
+    depends on the auth method: a service account has no Drive of its
+    own, so everything it can see is under --drive-shared-with-me;
+    an OAuth-as-you connection has a real My Drive root, and
+    --drive-shared-with-me there would show items shared BY OTHERS
+    with the user instead of their own Inbox/Library.
+    """
+    import json as json_mod
+    import subprocess
+
+    parent_id = request.args.get("parent_id")
+    remote = Config.RCLONE_DRIVE_REMOTE
+    cmd = ["rclone", "lsjson", f"{remote}:", "--dirs-only"]
+    if parent_id:
+        cmd += [f"--drive-root-folder-id={parent_id}"]
+    elif _rclone_drive_status().get("auth_method") == "service_account":
+        cmd += ["--drive-shared-with-me"]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    except (subprocess.SubprocessError, OSError) as e:
+        return jsonify({"error": f"rclone invocation failed: {e}"}), 500
+    if result.returncode != 0:
+        return jsonify({"error": result.stderr.strip()}), 400
+
+    try:
+        entries = json_mod.loads(result.stdout)
+    except ValueError:
+        return jsonify({"error": "unexpected rclone output"}), 500
+
+    return jsonify([{"id": e["ID"], "name": e["Name"]} for e in entries])
+
+
+@bp.post("/settings/rclone/drive/root-folder")
+def set_rclone_drive_root():
+    """
+    Points the `gdrive` remote's root at a folder picked via the
+    endpoint above, instead of the connection's own (for a service
+    account: empty) Drive root -- this is what makes DRIVE_INBOX_PATH
+    ("Inbox") and DRIVE_LIBRARY_PATH ("Library") in config.py resolve
+    against the actual shared folder rather than nothing.
+    """
+    import subprocess
+
+    data = request.get_json() or {}
+    folder_id = (data.get("folder_id") or "").strip()
+    folder_name = (data.get("folder_name") or "").strip()
+    if not folder_id:
+        return jsonify({"error": "folder_id is required"}), 400
+
+    try:
+        _update_rclone_drive_field("root_folder_id", folder_id)
+    except (subprocess.SubprocessError, OSError) as e:
+        return jsonify({"error": f"rclone invocation failed: {e}"}), 500
+    except RcloneConfigError as e:
+        return jsonify({"error": f"rclone config update failed: {e}"}), 400
+
+    if folder_name:
+        row = Setting.query.get("_ROOT_FOLDER_NAME") or Setting(key="_ROOT_FOLDER_NAME")
+        row.value = folder_name
+        db.session.merge(row)
+        db.session.commit()
+
+    return jsonify(_rclone_drive_status())
 
 
 class RcloneConfigError(Exception):
@@ -739,15 +822,11 @@ _DRIVE_WIZARD_ANSWERS = {
 }
 
 
-def _write_rclone_drive_config(**params):
+def _drive_rclone_wizard(remote, result):
     """
-    (Re)creates the `gdrive` remote with the given rclone `drive`
-    backend params (token+client_id/secret for OAuth, or
-    service_account_file for a service account) and drives the
-    post-config wizard to completion. `rclone config create` on an
-    existing remote fully replaces it -- confirmed by hand, not just
-    assumed -- so switching auth methods never leaves stale fields
-    (e.g. an old token) mixed in with a new service_account_file.
+    Drives rclone's --non-interactive post-config wizard (see
+    _DRIVE_WIZARD_ANSWERS) to completion, starting from the JSON
+    result of an initial `config create`/`config update` call.
 
     Raises RcloneConfigError on failure or an unrecognized wizard
     question (never silently answers something we don't have a
@@ -756,18 +835,6 @@ def _write_rclone_drive_config(**params):
     import json as json_mod
     import subprocess
 
-    remote = Config.RCLONE_DRIVE_REMOTE
-    cmd = ["rclone", "config", "create", remote, "drive", "--non-interactive"]
-    for key, value in params.items():
-        if value:
-            cmd += [key, value]
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if result.returncode != 0:
-        raise RcloneConfigError(result.stderr.strip())
-
-    # Drive the post-config wizard (see _DRIVE_WIZARD_ANSWERS) until
-    # rclone reports an empty State, meaning the remote is complete.
     for _ in range(10):  # hard ceiling -- never loop indefinitely
         try:
             reply = json_mod.loads(result.stdout)
@@ -791,6 +858,50 @@ def _write_rclone_drive_config(**params):
             raise RcloneConfigError(result.stderr.strip())
 
     raise RcloneConfigError("rclone config wizard did not terminate")
+
+
+def _write_rclone_drive_config(**params):
+    """
+    (Re)creates the `gdrive` remote with the given rclone `drive`
+    backend params (token+client_id/secret for OAuth, or
+    service_account_file for a service account). `rclone config
+    create` on an existing remote fully replaces it -- confirmed by
+    hand, not just assumed -- so switching auth methods never leaves
+    stale fields (e.g. an old token) mixed in with a new
+    service_account_file. Use _update_rclone_drive_field instead for a
+    single-field change (e.g. root_folder_id) that should leave
+    existing auth fields alone.
+    """
+    import subprocess
+
+    remote = Config.RCLONE_DRIVE_REMOTE
+    cmd = ["rclone", "config", "create", remote, "drive", "--non-interactive"]
+    for key, value in params.items():
+        if value:
+            cmd += [key, value]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RcloneConfigError(result.stderr.strip())
+    _drive_rclone_wizard(remote, result)
+
+
+def _update_rclone_drive_field(key, value):
+    """
+    Updates a single field on the existing `gdrive` remote (e.g.
+    root_folder_id) -- `config update`, unlike `config create`, merges
+    rather than replaces, confirmed by hand (auth fields survive).
+    """
+    import subprocess
+
+    remote = Config.RCLONE_DRIVE_REMOTE
+    result = subprocess.run(
+        ["rclone", "config", "update", remote, "--non-interactive", key, value],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RcloneConfigError(result.stderr.strip())
+    _drive_rclone_wizard(remote, result)
 
 
 @bp.post("/settings/rclone/drive")

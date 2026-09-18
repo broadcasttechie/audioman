@@ -88,9 +88,21 @@ needs to know, both from PLAN.md:
   inline in rclone.conf, since unlike an OAuth token it doesn't expire.
   `rclone config create` on an existing remote fully replaces it (confirmed
   by hand), so switching auth methods never leaves stale OAuth fields mixed
-  in. Not yet switched over — needs a service account created in Cloud
-  Console and the `Inbox`/`Library` folders shared with its email; the
-  OAuth connection still works in the meantime.
+  in. **Done** — connected as `audio-manager@hass-355519.iam.gserviceaccount.com`.
+- **Root folder**: sharing a parent folder ("Audio recording", containing
+  `Inbox`/`Library`) does grant access to its contents, but nested items
+  don't surface at the connection's own top level (a service account has no
+  Drive of its own; an OAuth user's top level is their My Drive root, not
+  what's shared with them) — needs `root_folder_id` pointed at the shared
+  parent. Added a proper browsable picker to the settings page instead of
+  requiring a pasted folder ID: `GET .../drive/folders[?parent_id=]` lists
+  folders (top level via `--drive-shared-with-me` for a service account,
+  plain listing for OAuth — these differ, see the docstring) using
+  one-off `--drive-root-folder-id` flags that never touch the persisted
+  config; `POST .../drive/root-folder` is the only thing that does, via
+  `rclone config update` (merges, unlike `create` — confirmed by hand that
+  the service account field survives). **Done** — root set to "Audio
+  recording", `Inbox`/`Library` now resolve correctly.
 
 ## NAS
 
