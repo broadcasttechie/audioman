@@ -26,6 +26,33 @@
   `status: error` via `/api/jobs/<name>/status` without crashing the worker,
   exactly as PLAN.md §12 describes.
 
+## Settings page
+
+`http://192.168.1.34:5000/` now redirects to `/settings` — a page for the
+config items that make sense to edit at runtime rather than only via
+`audio-manager.env` + restart: Dawarich URL/key, Immich URL/key, the upload
+API key, and a Google Drive connect flow (paste the JSON token from
+`rclone authorize "drive"`, run on a machine with a browser since this
+server has none — the app never performs the OAuth grant itself). Backed by
+a new `settings` DB table; secrets are never echoed back once saved, only
+reported as set/unset. See `app/settings.py`.
+
+## nginx / HTTPS (being set up separately)
+
+Root now returns something (redirect to `/settings`) instead of 404ing, so
+a reverse proxy has a home page to hit. Two things whoever configures nginx
+needs to know, both from PLAN.md:
+- **Body size + timeout**: nginx's defaults (~1MB, 60s) will silently reject
+  real audio uploads through `/api/ingest/upload` before Flask even sees
+  them — needs `client_max_body_size` raised generously and a longer
+  `proxy_read_timeout`.
+- Flask's own `MAX_CONTENT_LENGTH` (config.py) is still unset — independent
+  of nginx's limit, deliberately left as a real decision for whoever sets
+  a realistic max recording size, not a guessed default.
+- This also revisits PLAN.md's explicit "VPN-only, no reverse proxy/TLS
+  assumed" access decision — worth updating that section once nginx/HTTPS
+  is actually in place, so PLAN.md doesn't go stale on this point.
+
 ## Bugs found and fixed in the deploy artifacts (not application logic)
 
 - `jobs/worker.py` was invoked as `python3 jobs/worker.py`, which puts `jobs/`
@@ -62,14 +89,16 @@
 - **UniFi**: DHCP reservation for the MAC above, plus local DNS
   `audioman.home.zamia.co.uk` → reserved IP (per cluster convention: LAN-only
   DNS, no public record). I don't have UniFi access from here.
-- **Google Drive OAuth** (`rclone config` for the `gdrive` remote) — requires
-  your consent in a real Google auth flow; I won't drive this myself.
+- **Google Drive OAuth** — run `rclone authorize "drive"` on a machine with a
+  browser, log into Google there, paste the resulting token into the new
+  Settings page's Google Drive section. Requires your consent in a real
+  Google auth flow; I won't drive this myself.
 - **Dawarich API key** (CT 128, pmx2, guessed at `http://192.168.1.143:3000`
   — port not confirmed) and **Immich API key** (CT 131, pmx1, guessed at
   `http://192.168.1.186:2283`) — I have infra access to both containers but
   didn't generate keys inside someone else's already-running service without
   checking first. Say the word and I will, or generate them yourself via each
-  app's UI and hand them over.
+  app's UI and paste them into the Settings page.
 - **PBS backup + ZFS replication**: deliberately deferred — the NAS bind
   mount (once added) makes this guest ineligible for replication, same as
   Immich already is. Worth folding into `/etc/pve/jobs.cfg` once the NAS
