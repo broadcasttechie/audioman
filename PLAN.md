@@ -770,3 +770,154 @@ what make timestamp-first actually feel like a workflow.
 that's fine (confirm rather than choose); the earlier question of making it
 optional when a project is set is unchanged.
 
+### 17.5 Time correctness: timezone/DST and per-recorder clock offset
+
+**Asked for**: read timestamps with the right summer-time/timezone offset,
+and allow a precise per-recorder offset (e.g. a recorder known to run a
+few minutes off).
+
+**Checked against the running system (2026-09-18) — these are facts, not
+guesses:**
+- Dawarich's `timestamp` is an **integer epoch (UTC)**. `jobs/dawarich.py`
+  calls `datetime.fromisoformat()` on it, which raises `TypeError` on the
+  first real lookup. Dormant only because no resource has yet had a
+  `captured_at`. **Not fixed** — the right fix depends on the contract
+  below.
+- Dawarich's `start_at`/`end_at` filters **work** (ISO with offset or epoch;
+  13 of 13 returned points inside the window). This resolves the "best
+  guess" caveat in §8/§12. The code sends *naive* `isoformat()` strings —
+  they should be aware UTC. Immich queries in `jobs/immich.py` have the same
+  naive-datetime habit.
+- Ingest (`jobs/ingest.py` `_extract_timestamp`) keeps `raw[:19]`, which
+  **drops any UTC offset** in the tag, and stores the recorder's wall-clock
+  time as if it were UTC. So today a summer recording is an hour out
+  against Dawarich's UTC epoch.
+- The detail screen has a **round-trip bug**: it sends UTC, but the API
+  returns a naive `isoformat()` with no `Z`, which the browser reads as
+  local. Entering 10:00 (BST) reads back as 09:00 — reproduced in the
+  browser (Europe/London). Not fixed yet, same reason.
+- Also, `DAWARICH_API_URL` had been set to a guessed `http://…:3000`, which
+  answers 400 (that port serves HTTPS). Corrected to
+  `https://dawarich.home.zamia.co.uk` (certificate verifies). Recorded so
+  the guess isn't reintroduced. Dawarich points also carry `city`,
+  `country` and `geodata` — place names for §17.4's inference, free.
+
+**Proposed contract**
+- `captured_at` is **naive UTC in the DB, serialised with `Z`** — one
+  meaning everywhere (API, UI, Dawarich/Immich queries).
+- **Keep the original.** Store `captured_at_raw` (what the file said,
+  unconverted), the recorder profile used, and the correction applied, so a
+  changed offset or timezone can be re-applied without re-ingesting and
+  nothing is ever lost to a bad correction.
+- **Recorder profile** (new table): name; how to recognise it (a `device`
+  capture from §17.6, or embedded `Model`/`Originator`/serial via
+  exiftool); `timezone` as an **IANA name** (`Europe/London`) — the tz
+  database is the actual answer to summer time, never a stored `+1`;
+  `clock_offset_seconds` (signed, seconds precision); optional
+  `effective_from`, since drift changes after battery swaps or resets;
+  notes. Conversion: `utc = localise(wall_clock − offset, tz)`.
+- **An offset in the tag wins**: when the embedded value carries one
+  (`+01:00`), use it instead of the profile timezone — stop truncating.
+- **DST edges**: the clock-back hour happens twice and the clock-forward
+  hour never happens. Pick a value, set an "ambiguous" flag, and surface it
+  for review rather than silently choosing.
+- The UI edits in the browser's local time, stores UTC, and shows the raw
+  value plus the applied correction so it's obvious why a time is what it is.
+- The phone app (§16) can embed true UTC at source, which sidesteps all of
+  this for recordings made with it.
+
+### 17.6 Filename patterns (user-defined, grok-style)
+
+**Asked for**: customisable patterns to extract data from filenames,
+grok-style. **Recommended**: yes — a small grok layer that compiles to a
+plain Python regex, ~30 lines and no new dependency. Raw named-group regex
+stays allowed inside a pattern, so it's a superset of "just write a regex".
+A bare `strptime` format was considered and rejected: it only handles the
+date, and the value here is also sequence numbers, track numbers and device
+names.
+
+- **Syntax**: `%{NAME}` or `%{NAME:field}`, expanded recursively from a
+  dictionary of named building blocks (`YY`, `MM`, `DD`, `HH`, `MI`, `SS`,
+  `INT`, `WORD`, `DATE_YYMMDD`, `TIME_HHMMSS`, `DATA`, …). Users can add
+  their own. Unanchored by default — the first real file arrived as
+  `Copy of audio_260917_091124_…wav`, so patterns can't assume the name
+  starts cleanly.
+- **Reserved field names** (anything else captured is ignored):
+  `year month day hour minute second` (2-digit year → 20xx), `seq`,
+  `track`, `prefix` (the part siblings share), `device`, and `project` /
+  `category` / `tag` as *hints* matched against existing slugs.
+- **Storage**: a `filename_patterns` table (name, pattern, priority,
+  enabled, sample filename), first enabled match wins. Extracted values go
+  in a `filename_meta` JSON on the resource, so editing a pattern can be
+  re-run over pending resources without re-ingesting.
+- **Never silent** (consistent with §4 and §17.4): extracted values appear as
+  suggestions to confirm, not as facts. A pattern can propose `captured_at`
+  but that still needs the explicit OK noted in §17.4, and goes through the
+  recorder-profile conversion in §17.5.
+- **Editor + tester** on the manage page (§17.2): type or paste a name, see
+  every extracted field and the resulting UTC time live, and check a
+  pattern against the filenames already in the database to see the match
+  rate. Compile errors caught at save; cap pattern length (Python's `re`
+  has no timeout, but filenames are short).
+- **Seed** one default pattern for the known recorder
+  (`audio_%{YY}%{MM}%{DD}_%{HH}%{MI}%{SS}_…`). The other recorders' patterns
+  come from real examples — which is what unblocks §17.7.
+
+### 17.7 Split files and multitrack (recorded from discussion)
+
+Two different things that both need "these files belong together":
+- **Split** (a recorder starting a new file every ~30 minutes) should end up
+  as **one file** — a real ffmpeg concat, non-destructive (originals kept and
+  audit-logged, consistent with never silently discarding).
+- **Multitrack** (simultaneous files, one per input) stays as **separate
+  files** reviewed, categorised and filed as one unit. Not a DAW: no
+  synced multi-track playback, just awareness.
+
+Shared plumbing: a nullable `group_id` plus `group_type` (`split` |
+`multitrack`) on `Resource`. Detection is automatic-but-confirmable — a
+"these look like one recording, join?" suggestion, never an automatic merge:
+contiguous `captured_at` + `seq` for splits (start of N+1 ≈ start of N +
+duration), identical start + duration + shared `prefix` for multitrack.
+Both are read off the §17.6 fields, so they're per-recorder patterns rather
+than hardcoded heuristics — and the sample filenames still owed for both
+recorders become the test cases for those patterns. Timestamps used for
+adjacency must be corrected via §17.5 first, or clock offset makes
+contiguous files look gapped.
+
+### 17.8 Two pages, and type-dependent UI
+
+**Stated**: the initial review page is essentially basic intake; the full
+map / timeline browser belongs on a separate detailed page; and the map is
+only relevant for certain kinds of recording, e.g. ambient.
+
+**As built today** the queue is a flat list (`pending-review` = anything not
+yet filed) and one screen does everything — date, place, cataloguing, clips,
+export. Nothing distinguishes "needs its when/where sorted" from "ready to
+catalogue", and there is no detailed page yet (the map and waveform from
+§11 are still unbuilt).
+
+**Proposed split**
+- *Intake/review page* (the current `/review/<id>`, trimmed): when and where
+  first (§17.4/§17.5), then category/project/tags, then File. Location here
+  is a pin and place name, not a map browser.
+- *Detail/explore page* (new): the §11 features — waveform and GPS
+  map/timeline synced to each other, clips, export, companion photos.
+  Reached from the intake page and from the Library.
+- Whether clips/export move off the intake page is **open**; they need the
+  waveform, which argues for the detail page.
+- Stage could be *derived* rather than a new DB status (e.g. "needs
+  when/where" = no `captured_at` or unconfirmed location; "ready to
+  catalogue" = has both), shown as a badge/filter on the queue. A literal
+  second queue is the alternative. **Open.**
+
+**Type-dependent UI — the first place behaviour depends on category.**
+Until now nothing branches on a category's value (§17.1). "Show the
+map/timeline" should not be keyed on the *name* `ambient`, since names are
+user-editable — it should be a **flag on the category record** (e.g.
+`show_map`, or a small set of traits), so a renamed or new category still
+behaves correctly. Category is then chosen at intake and decides whether the
+detail page's map/timeline is offered prominently. Same flag could decide
+whether the full GPS *track* is fetched at all versus just the pin (a voice
+memo doesn't need a track; wasted Dawarich calls otherwise). **Open:** what
+the traits are, and whether a category with no map flag still gets a pin.
+
