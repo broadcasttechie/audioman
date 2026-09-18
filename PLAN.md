@@ -70,6 +70,10 @@ Category is a **fixed enum**, not a tag — it drives the `misc/<category>/`
 fallback path and needs to stay predictable. Everything else (venue,
 mic used, weather, etc.) is a free-form tag.
 
+> **Being reversed in part — see §17.** Categories are to become
+> configurable at the user's request; the "predictable path" concern
+> above is what §17's design has to preserve.
+
 ## 4. Ingest pipeline — implemented in `jobs/ingest.py`
 
 1. `drive-inbox-pull` job lists `/Inbox` via `rclone lsjson`, compares
@@ -611,4 +615,106 @@ uploads:**
 - This is a real second project (Kotlin, Android Studio, its own
   release/signing concerns) — say if you want to actually scope and
   start that, rather than just the server-side groundwork done here.
+
+## 17. Planned (noted, not built): configurable categories + a manage page
+
+Two related requests from the UI work. Nothing here is implemented; this
+records what was asked and what it touches so it isn't re-derived later.
+
+### 17.1 Configurable categories
+
+**Asked for**: categories editable by the user, not a fixed list.
+This reverses part of §3 ("fixed enum"), whose reason was path
+predictability — `misc/<category>/<year>/` is rendered from the category
+string, so a careless rename or delete silently changes where files
+belong.
+
+**Everything that currently assumes the fixed list**
+- `config.py` `CATEGORIES` — the source of truth today.
+- `app/api.py` `update_resource` — validates against `Config.CATEGORIES`.
+- `app/templates/resource_detail.html` — a *second, hardcoded copy* of the
+  same list in JS (it should fetch from the API instead; this duplicate
+  would drift the moment categories become editable).
+- `jobs/path_template.py` — category string becomes the folder name.
+- `jobs/export.py` — category goes into exported metadata.
+- `Resource.category` — plain string, no FK.
+
+**Suggested shape (open — not decided)**: a `categories` table
+(`slug`, `label`, `sort_order`, `archived`) with `Resource.category`
+continuing to store the slug, so the path template and existing rows need
+no migration. `Config.CATEGORIES` becomes seed data only. The label is
+freely editable; the slug is the path segment, so changing it is a
+*refile* operation (re-render paths via `refile-all`, log to
+`file_events`), not a plain edit. "Delete" should be **archive** — hidden
+from the picker but still valid on resources that already use it — with a
+hard delete only when zero resources reference it, so a category can
+never dangle.
+
+### 17.2 Manage page (tags / projects / categories)
+
+**Asked for**: an admin page for tag and project management — merge,
+correction (rename), removal, "etc." Reachable from Settings rather than
+a fourth bottom tab, to keep mobile nav at three items (open — say if you
+want it as its own tab). Categories from 17.1 would live on the same page.
+
+**Missing API** — only `GET`/`POST` exist today for tags and projects:
+- Tags: `PATCH` (rename), `DELETE`, `POST .../merge` (repoint
+  `resource_tags` from the source tag(s) to a target, skipping resources
+  that already carry the target, then delete the sources). A rename that
+  collides with an existing name (`Tag.name` is unique) should offer a
+  merge rather than just 400.
+- Projects: `PATCH` (name/slug/notes), `DELETE`, merge. **A project's slug
+  is a NAS folder name** (`{project}/{filename}`), so a slug change or
+  merge moves files — same refile-and-log treatment as a category slug
+  change, not a metadata-only edit. Deleting a project with resources
+  needs an explicit reassign-or-unassign choice.
+- List endpoints should return usage counts (resources per tag/project/
+  category) — every destructive action wants to show "affects N
+  recordings" first, and unused/near-duplicate tags are what make
+  cleanup findable.
+
+**Things this exposes**
+- `update_resource` does `Tag.query.get(tag_id)` per id and would put
+  `None` into `r.tags` for an ID that no longer exists. Harmless today
+  (tags can't be deleted); once merge/delete exist, an open review page
+  holding a stale tag ID hits it. Should 400 on an unknown ID.
+- Merges/renames/removals that change what's on disk or on many
+  resources at once should write `file_events` rows, same as filing does.
+- Everything above is single-user reference data, so no auth beyond the
+  existing VPN-only stance (§16) — but destructive actions still want a
+  confirm step, and merge/delete are hard to undo without a backup.
+
+### 17.3 Location: refresh button after the timestamp is fixed
+
+**Asked for**: on the resource detail screen, a button to re-run the
+location lookup once the timestamp has been corrected. UI-only in the
+simple case — `POST /api/resources/<id>/location/refresh` already exists
+(§14) and returns `{found, track_points}`, enough for "found a location" /
+"Dawarich had nothing for that window" feedback. It 400s without
+`captured_at`, so the button should be disabled with a hint until one is
+set. Photos depend on `captured_at` the same way (`/photos/refresh`), so
+one "refresh from Dawarich/Immich" action probably covers both.
+
+**Why a button is needed (checked in `jobs/enrich.py`)**
+- *Timestamp was missing, then set*: `enrich_locations` only picks up
+  `captured_at IS NOT NULL AND dawarich_checked_at IS NULL`, and a
+  resource with no timestamp is never checked — so it would be picked up
+  automatically on the next 15-minute run. The button here is just
+  immediacy and feedback.
+- *Timestamp was wrong, then corrected*: `dawarich_checked_at` is already
+  set from the first lookup, so the automatic queue **never** retries it.
+  This is the case the button is really for. Cleaner alternative or
+  complement: changing `captured_at` via `PATCH` should reset
+  `dawarich_checked_at`/`immich_checked_at` to NULL so the normal queue
+  redoes it without anyone remembering to press anything.
+
+**Two problems in the refresh path to fix alongside** (both apply to the
+endpoint in `app/api.py`, and it's the one the button would call):
+- It **appends** `TrackPoint` rows without deleting existing ones, so
+  refreshing after correcting a timestamp leaves the old (wrong-time)
+  track in place next to the new one, and repeated presses duplicate
+  points. It should replace the resource's track, not add to it.
+- It overwrites `Location` unconditionally, including a location the user
+  set by hand (`source: manual`) — a refresh would silently discard a
+  manual override. It should leave `manual` alone (or ask).
 
