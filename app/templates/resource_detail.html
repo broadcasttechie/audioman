@@ -124,12 +124,16 @@ function renderDetail(resource) {
     container.append(banner);
   }
 
-  container.append(buildCategorySection(resource));
-  container.append(buildProjectSection(resource));
-  container.append(buildTagsSection(resource));
+  // Order is the workflow: when and where come first because they're
+  // the anchors -- location/photos enrichment hangs off the timestamp,
+  // and what a recording *is* (project, category, tags) is mostly
+  // answerable once you know when and where it was made.
   container.append(buildCapturedAtSection(resource));
   container.append(buildLocationSection(resource));
   if (resource.has_photos) container.append(buildPhotosSection());
+  container.append(buildCategorySection(resource));
+  container.append(buildProjectSection(resource));
+  container.append(buildTagsSection(resource));
   container.append(buildClipsSection(resource));
 
   const fileBtn = el('button', {

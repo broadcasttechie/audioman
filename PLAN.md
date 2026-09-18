@@ -629,6 +629,18 @@ predictability — `misc/<category>/<year>/` is rendered from the category
 string, so a careless rename or delete silently changes where files
 belong.
 
+**User's stated intent**: the right categories aren't known yet, and there
+is real overlap with tags — but categories must stay a separate concept,
+because they're the *high-level sort* (the folder tree) while tags are
+descriptive detail. So: start with the four defaults, expect early
+renaming/merging as real use shows what's wanted, and keep category and tag
+distinct. A working test for which is which: if you'd ever want to *browse*
+it as a folder, it's a category (one value, mutually exclusive); if you'd
+want to *filter across* it, it's a tag. Because experimentation will
+produce overlaps, **merging two categories** (reassign resources, then
+refile) belongs on the manage page alongside tag merge, not just
+rename/archive.
+
 **Everything that currently assumes the fixed list**
 - `config.py` `CATEGORIES` — the source of truth today.
 - `app/api.py` `update_resource` — validates against `Config.CATEGORIES`.
@@ -717,4 +729,44 @@ endpoint in `app/api.py`, and it's the one the button would call):
 - It overwrites `Location` unconditionally, including a location the user
   set by hand (`source: manual`) — a refresh would silently discard a
   manual override. It should leave `manual` alone (or ask).
+
+### 17.4 Workflow order: when and where first, the rest inferred
+
+**Asked for**: captured date and location come first in the review
+workflow; from those, the rest can be worked out.
+
+**Done**: `resource_detail.html` now orders sections Captured at →
+Location → companion photos → Category → Project → Tags → Clips
+(previously category/project/tags led). Presentation only.
+
+**Not built — "worked out" means suggestions, not just ordering.** Possible
+inputs, cheapest first:
+- *History*: nearest already-filed recordings by place and time → suggest
+  their project/category/tags. Single-user, so the user's own filing
+  history is the whole model; a plain nearest-neighbour lookup, nothing
+  fancier. Suggested values pre-fill for one-tap confirm, never auto-apply.
+- *Immich photos* taken at that time/place as context (photo metadata may
+  carry place names — unverified; §13's caveat about Immich's API shape
+  applies).
+- *Filename timestamp as a suggestion for `captured_at`.* The first real
+  ingest (`audio_260917_091124_32bit_orig_stereo.wav`) has the time in its
+  name and no trusted embedded tag, so it landed with no timestamp and
+  therefore no location. §4 deliberately never uses filenames/mtime as a
+  silent fallback (a wrong time mislocates a recording quietly). A *visible
+  suggestion the user confirms* would respect the reason for that rule but
+  bends its letter, so it needs an explicit OK. Timezone is also unknown
+  (recorder-local vs UTC).
+
+**Prerequisite, not optional**: setting `captured_at` doesn't currently
+trigger a location lookup. Today you set the date and see "No location
+yet" for up to 15 minutes (next `enrich-locations` run), and if the date
+was *corrected* the automatic queue never re-runs at all. The §17.3 pieces
+(reset `dawarich_checked_at`/`immich_checked_at` when `captured_at`
+changes, replace rather than append the track, don't overwrite a manual
+location, plus an immediate refresh with visible "looking up…" state) are
+what make timestamp-first actually feel like a workflow.
+
+**Open**: category is still required to file. If suggestions pre-fill it,
+that's fine (confirm rather than choose); the earlier question of making it
+optional when a project is set is unchanged.
 
