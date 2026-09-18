@@ -37,10 +37,12 @@ def _record_run(job_name, status, log_tail=""):
     db.session.commit()
 
 
-def _rclone_lsjson(remote_path):
+def _rclone_lsjson(remote_path, files_only=False):
+    cmd = ["rclone", "lsjson", remote_path]
+    if files_only:
+        cmd.append("--files-only")
     result = subprocess.run(
-        ["rclone", "lsjson", remote_path],
-        capture_output=True, text=True, check=True,
+        cmd, capture_output=True, text=True, check=True,
         timeout=Config.RCLONE_LIST_TIMEOUT_SECONDS,
     )
     return json.loads(result.stdout)
@@ -50,13 +52,26 @@ def drive_inbox_pull():
     """
     Two-poll stability check before anything is pulled: a file must be
     unchanged in size+modtime across two consecutive calls of this job,
-    AND older than MIN_AGE_MINUTES, before it's eligible for
-    `rclone move`. Prevents pulling (and later deleting from Drive) a
-    file that's still mid-upload.
+    AND older than MIN_AGE_MINUTES, before it's eligible to be pulled.
+    Prevents pulling a file that's still mid-upload.
+
+    Pulled files are copied out, then moved (re-parented) into
+    Inbox/_processed rather than deleted from Drive. This isn't a
+    style choice: confirmed live against a real 403
+    insufficientFilePermissions error that on a personal (non-
+    Workspace) Google account, Editor sharing lets a non-owner
+    read/write a file but not delete it -- Shared Drives (where a
+    Content Manager genuinely can delete) are a Workspace-only
+    feature. Re-parenting a file you don't own works fine under
+    Editor; deleting it generally doesn't.
     """
     remote_path = f"{Config.RCLONE_DRIVE_REMOTE}:{Config.DRIVE_INBOX_PATH}"
     try:
-        entries = _rclone_lsjson(remote_path)
+        # files_only: the _processed subfolder this job moves ingested
+        # files into (see docstring) shows up as a directory entry in
+        # this same listing otherwise, and gets treated like a file
+        # with a bogus negative size if not filtered out.
+        entries = _rclone_lsjson(remote_path, files_only=True)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         detail = _cmd_error_detail(e)
         _record_run("drive-inbox-pull", "error", detail)
@@ -78,7 +93,7 @@ def drive_inbox_pull():
             if age >= timedelta(minutes=Config.MIN_AGE_MINUTES):
                 try:
                     subprocess.run(
-                        ["rclone", "move", f"{remote_path}/{path}", Config.STAGING_DIR],
+                        ["rclone", "copy", f"{remote_path}/{path}", Config.STAGING_DIR],
                         check=True, capture_output=True, text=True,
                         timeout=Config.RCLONE_TRANSFER_TIMEOUT_SECONDS,
                     )
@@ -88,7 +103,7 @@ def drive_inbox_pull():
                     failed.append(path)
                     db.session.add(FileEvent(
                         event_type="failed",
-                        detail=f"rclone move failed for {path}, will retry next run: {_cmd_error_detail(e)}",
+                        detail=f"rclone copy failed for {path}, will retry next run: {_cmd_error_detail(e)}",
                     ))
                     db.session.commit()
                     continue
@@ -105,6 +120,35 @@ def drive_inbox_pull():
                     # file sitting in STAGING_DIR with no Resource row
                     # and no record of what happened to it.
                     _fail(None, local_path, "metadata-extraction", f"unexpected ingest error: {e}")
+
+                # Best-effort tidy-up, not a correctness requirement:
+                # the file is already safely ingested locally at this
+                # point regardless of what happens below. A failure
+                # here just means this file gets re-copied and
+                # re-detected-as-duplicate (quarantined, not
+                # duplicated — see jobs/ingest.py) on every future
+                # poll until someone notices and fixes it by hand.
+                # NEEDS_ATTENTION: this is exactly the kind of
+                # silently-stuck state the cleanup-visibility
+                # mechanism noted in DEPLOYMENT.md is meant to surface
+                # — not built yet, so for now it only shows up here in
+                # file_events.
+                try:
+                    subprocess.run(
+                        ["rclone", "moveto", f"{remote_path}/{path}", f"{remote_path}/_processed/{path}"],
+                        check=True, capture_output=True, text=True,
+                        timeout=Config.RCLONE_TRANSFER_TIMEOUT_SECONDS,
+                    )
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                    db.session.add(FileEvent(
+                        event_type="failed",
+                        detail=(
+                            f"ingested {path} successfully, but couldn't move it to "
+                            f"Inbox/_processed afterwards (will keep re-copying and "
+                            f"quarantining-as-duplicate until this is fixed): {_cmd_error_detail(e)}"
+                        ),
+                    ))
+                    db.session.commit()
                 continue
 
         # Either still within MIN_AGE_MINUTES (unchanged, keep counting

@@ -94,15 +94,46 @@ needs to know, both from PLAN.md:
   don't surface at the connection's own top level (a service account has no
   Drive of its own; an OAuth user's top level is their My Drive root, not
   what's shared with them) — needs `root_folder_id` pointed at the shared
-  parent. Added a proper browsable picker to the settings page instead of
-  requiring a pasted folder ID: `GET .../drive/folders[?parent_id=]` lists
-  folders (top level via `--drive-shared-with-me` for a service account,
-  plain listing for OAuth — these differ, see the docstring) using
-  one-off `--drive-root-folder-id` flags that never touch the persisted
-  config; `POST .../drive/root-folder` is the only thing that does, via
-  `rclone config update` (merges, unlike `create` — confirmed by hand that
-  the service account field survives). **Done** — root set to "Audio
-  recording", `Inbox`/`Library` now resolve correctly.
+  parent, OR `shared_with_me = true` if `Inbox`/`Library` are shared
+  individually instead of via a common parent (which is what actually
+  happened — see below). Added a proper browsable picker to the settings
+  page instead of requiring a pasted folder ID: `GET .../drive/folders[?parent_id=]`
+  lists folders using one-off `--drive-root-folder-id`/`--drive-shared-with-me`
+  flags that never touch the persisted config; `POST .../drive/root-folder`
+  is the only thing that does, via `rclone config update` (merges, unlike
+  `create` — confirmed by hand the service account field survives).
+- **Personal Google accounts can't delete files they don't own, even with
+  Editor sharing** — hit this live as a real ingest failure (403
+  `insufficientFilePermissions`), not a sharing misconfiguration. Editor
+  grants read/write but not delete on a non-owned file; only Shared Drives
+  (a Workspace-only feature, not available on personal Gmail) let a
+  non-owner genuinely delete. Re-parenting a file you don't own works fine
+  under Editor, though, so `drive_inbox_pull` (`jobs/rclone_jobs.py`) now
+  copies out + `rclone moveto`s the source into `Inbox/_processed` instead
+  of deleting it. Verified end-to-end with a real 330MB file: copy, ingest
+  (landed correctly in the Review Queue), re-parent into `_processed`, and
+  confirmed `_processed` itself gets filtered out of future listings
+  (`--files-only`) rather than being mistaken for a pending upload.
+  Non-fatal failure mode if the re-parent step ever fails: the file just
+  gets re-copied and quarantined-as-duplicate every poll until someone
+  notices (logged to `file_events`, not silent data loss) — see the
+  cleanup-visibility note below.
+- Also mid-saga: you unshared/re-shared partway through, which pointed
+  `root_folder_id` at a now-inaccessible folder — fixed by switching to
+  `shared_with_me` (see above). **Overall: done** — Inbox pull is fully
+  working with a service account under a personal Google account's real
+  constraints.
+
+## Cleanup visibility (not built yet — noted, not implemented)
+
+Several things in this app can end up in a "needs a human to notice and fix"
+state without failing loudly: the `_processed` re-parent above, a resource
+stuck in `failed` status, a job reporting `error`/`partial`. Right now these
+are only visible if you go looking (`file_events`, `/api/jobs/*/status`,
+`/api/resources?status=failed`). Worth a small aggregating mechanism —
+e.g. a `GET /api/needs-attention` that rolls these up, surfaced as a badge
+somewhere in the UI nav — rather than each one being its own silent trail.
+Not built; flagging so it doesn't get lost.
 
 ## NAS
 
