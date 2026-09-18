@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 import requests
 
 from config import Config
+from app.settings import get_config
 from .retry import call_with_retry
 
 PARAM_START = "start_at"
@@ -37,14 +38,15 @@ def fetch_points_in_range(start, end, max_attempts=None):
     if the request itself fails after retries — callers decide what
     "unavailable" means for them (skip vs. abort the batch).
     """
-    if not Config.DAWARICH_API_URL:
+    dawarich_url = get_config("DAWARICH_API_URL")
+    if not dawarich_url:
         return []
 
     def _fetch_page(page):
         response = requests.get(
-            f"{Config.DAWARICH_API_URL}/api/v1/points",
+            f"{dawarich_url}/api/v1/points",
             params={
-                "api_key": Config.DAWARICH_API_KEY,
+                "api_key": get_config("DAWARICH_API_KEY"),
                 PARAM_START: start.isoformat(),
                 PARAM_END: end.isoformat(),
                 "per_page": 200,

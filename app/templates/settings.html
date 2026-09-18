@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio Manager — Settings</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; line-height: 1.4; }
+  h1 { font-size: 1.4rem; }
+  section { border: 1px solid #8884; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+  h2 { font-size: 1.05rem; margin-top: 0; }
+  label { display: block; font-size: 0.85rem; margin: 0.75rem 0 0.25rem; opacity: 0.8; }
+  input[type=text], input[type=password], textarea {
+    width: 100%; box-sizing: border-box; padding: 0.4rem 0.5rem; font-size: 0.95rem;
+    border: 1px solid #8886; border-radius: 4px; background: transparent; color: inherit;
+  }
+  textarea { min-height: 4rem; font-family: monospace; font-size: 0.8rem; }
+  .row { display: flex; gap: 0.5rem; align-items: center; }
+  .row input { flex: 1; }
+  button { padding: 0.4rem 0.9rem; border-radius: 4px; border: 1px solid #8886; background: #8881; cursor: pointer; }
+  button:hover { background: #8882; }
+  .badge { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; }
+  .badge.set { background: #2a72; color: inherit; }
+  .badge.unset { background: #8884; color: inherit; }
+  .save { margin-top: 1rem; }
+  .status { font-size: 0.85rem; min-height: 1.2rem; margin-top: 0.5rem; }
+  .status.ok { color: #2a7; }
+  .status.err { color: #d55; }
+  p.hint { font-size: 0.8rem; opacity: 0.7; }
+  code { font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<h1>Audio Manager — Settings</h1>
+
+<section>
+  <h2>Dawarich <span id="dawarich-badge" class="badge"></span></h2>
+  <p class="hint">Location enrichment. Leave the key blank to keep the current one.</p>
+  <label for="dawarich_url">API URL</label>
+  <input type="text" id="dawarich_url" placeholder="http://192.168.1.143:3000">
+  <label for="dawarich_key">API key</label>
+  <input type="password" id="dawarich_key" placeholder="(unchanged)">
+</section>
+
+<section>
+  <h2>Immich <span id="immich-badge" class="badge"></span></h2>
+  <p class="hint">Companion photos. Leave the key blank to keep the current one.</p>
+  <label for="immich_url">API URL</label>
+  <input type="text" id="immich_url" placeholder="http://192.168.1.186:2283">
+  <label for="immich_key">API key</label>
+  <input type="password" id="immich_key" placeholder="(unchanged)">
+</section>
+
+<section>
+  <h2>Direct upload key <span id="upload-badge" class="badge"></span></h2>
+  <p class="hint">Shared secret for <code>POST /api/ingest/upload</code> (e.g. a future phone app). Sent as the <code>X-Upload-Key</code> header.</p>
+  <div class="row">
+    <input type="password" id="upload_key" placeholder="(unchanged)">
+    <button type="button" onclick="generateUploadKey()">Generate</button>
+  </div>
+</section>
+
+<button class="save" onclick="saveSettings()">Save</button>
+<div id="save-status" class="status"></div>
+
+<section>
+  <h2>Google Drive <span id="drive-badge" class="badge"></span></h2>
+  <p class="hint">
+    This server has no browser, so the OAuth grant has to happen on one of yours:
+  </p>
+  <ol class="hint">
+    <li>On a machine with a browser: install rclone, run <code>rclone authorize "drive"</code></li>
+    <li>Log into Google there and approve access</li>
+    <li>Copy the JSON token it prints and paste it below</li>
+  </ol>
+  <label for="drive_token">Pasted token</label>
+  <textarea id="drive_token" placeholder='{"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}'></textarea>
+  <button type="button" onclick="connectDrive()">Connect</button>
+  <div id="drive-status" class="status"></div>
+</section>
+
+<script>
+async function loadSettings() {
+  const r = await fetch('/api/settings');
+  const s = await r.json();
+
+  document.getElementById('dawarich_url').value = s.DAWARICH_API_URL.value || '';
+  setBadge('dawarich-badge', s.DAWARICH_API_KEY.is_set);
+
+  document.getElementById('immich_url').value = s.IMMICH_API_URL.value || '';
+  setBadge('immich-badge', s.IMMICH_API_KEY.is_set);
+
+  setBadge('upload-badge', s.UPLOAD_API_KEY.is_set);
+
+  setBadge('drive-badge', s.rclone_drive.configured, 'connected', 'not connected');
+}
+
+function setBadge(id, isSet, onText = 'set', offText = 'not set') {
+  const el = document.getElementById(id);
+  el.textContent = isSet ? onText : offText;
+  el.className = 'badge ' + (isSet ? 'set' : 'unset');
+}
+
+function generateUploadKey() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  document.getElementById('upload_key').value = hex;
+  document.getElementById('upload_key').type = 'text';
+}
+
+async function saveSettings() {
+  const body = {
+    DAWARICH_API_URL: document.getElementById('dawarich_url').value,
+    DAWARICH_API_KEY: document.getElementById('dawarich_key').value,
+    IMMICH_API_URL: document.getElementById('immich_url').value,
+    IMMICH_API_KEY: document.getElementById('immich_key').value,
+    UPLOAD_API_KEY: document.getElementById('upload_key').value,
+  };
+  const statusEl = document.getElementById('save-status');
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    statusEl.textContent = 'Saved.';
+    statusEl.className = 'status ok';
+    document.getElementById('dawarich_key').value = '';
+    document.getElementById('immich_key').value = '';
+    document.getElementById('upload_key').value = '';
+    await loadSettings();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'status err';
+  }
+}
+
+async function connectDrive() {
+  const statusEl = document.getElementById('drive-status');
+  const token = document.getElementById('drive_token').value;
+  try {
+    const r = await fetch('/api/settings/rclone/drive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    statusEl.textContent = data.configured ? 'Connected.' : 'Saved, but not showing as configured — check the pasted token.';
+    statusEl.className = 'status ok';
+    document.getElementById('drive_token').value = '';
+    await loadSettings();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'status err';
+  }
+}
+
+loadSettings();
+</script>
+</body>
+</html>

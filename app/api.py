@@ -4,6 +4,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .extensions import db
 from .models import Resource, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export
+from .settings import get_config, set_config, settings_snapshot, SECRET_KEYS
 from config import Config
 
 bp = Blueprint("api", __name__)
@@ -437,13 +438,14 @@ def _proxy_immich_asset(immich_asset_id, endpoint):
     import requests
     from flask import Response
 
-    if not Config.IMMICH_API_URL:
+    immich_url = get_config("IMMICH_API_URL")
+    if not immich_url:
         abort(404, description="Immich not configured")
 
     try:
         upstream = requests.get(
-            f"{Config.IMMICH_API_URL}/api/assets/{immich_asset_id}/{endpoint}",
-            headers={"x-api-key": Config.IMMICH_API_KEY},
+            f"{immich_url}/api/assets/{immich_asset_id}/{endpoint}",
+            headers={"x-api-key": get_config("IMMICH_API_KEY")},
             stream=True, timeout=Config.HTTP_TIMEOUT_SECONDS,
         )
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
@@ -527,9 +529,10 @@ def upload_audio():
     is the endpoint most likely to need internet exposure (a phone on
     mobile data), not just LAN/VPN access.
     """
-    if not Config.UPLOAD_API_KEY:
+    upload_key = get_config("UPLOAD_API_KEY")
+    if not upload_key:
         abort(404, description="upload endpoint not configured")
-    if request.headers.get("X-Upload-Key") != Config.UPLOAD_API_KEY:
+    if request.headers.get("X-Upload-Key") != upload_key:
         return jsonify({"error": "invalid or missing X-Upload-Key header"}), 401
 
     if "file" not in request.files:
@@ -643,3 +646,89 @@ def job_status(job_name):
         }
 
     return jsonify({"job_name": job_name, "last_result": last_result, "queue": queue_info})
+
+
+# --- Settings ---
+# DB-backed overrides for the credentials/URLs it makes sense to edit
+# from a settings page rather than only via env var + restart (see
+# app/settings.py for exactly which keys). Everything else in
+# config.py is still env-var only.
+
+@bp.get("/settings")
+def get_settings():
+    snapshot = settings_snapshot()
+    snapshot["rclone_drive"] = _rclone_drive_status()
+    return jsonify(snapshot)
+
+
+@bp.put("/settings")
+def put_settings():
+    """
+    Accepts a partial update -- any subset of the overridable keys.
+    A secret field left out (or sent as "") leaves the existing value
+    untouched, since the settings page never has the real value to
+    redisplay/resubmit -- only PATCH-style "set to this new value" is
+    supported for secrets, never "confirm the current value".
+    """
+    data = request.get_json() or {}
+    from .settings import OVERRIDABLE
+    unknown = set(data) - OVERRIDABLE
+    if unknown:
+        return jsonify({"error": f"not settable: {sorted(unknown)}"}), 400
+
+    for key, value in data.items():
+        if key in SECRET_KEYS and value == "":
+            continue  # blank means "leave unchanged", not "clear it"
+        set_config(key, value)
+
+    return jsonify(settings_snapshot())
+
+
+def _rclone_drive_status():
+    """
+    Whether the `gdrive` remote (Config.RCLONE_DRIVE_REMOTE) has a
+    token configured -- never returns the token itself. Local rclone
+    config check only, no network call, so this is safe to include in
+    every GET /settings.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["rclone", "config", "show", Config.RCLONE_DRIVE_REMOTE],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return {"configured": False}
+    configured = result.returncode == 0 and "token = " in result.stdout
+    return {"configured": configured, "remote": Config.RCLONE_DRIVE_REMOTE}
+
+
+@bp.post("/settings/rclone/drive")
+def connect_rclone_drive():
+    """
+    Finishes a headless rclone OAuth setup: the user runs
+    `rclone authorize "drive"` on a machine with a browser (this
+    server has none), logs into Google there, and pastes the resulting
+    JSON token blob here. We never perform the OAuth grant ourselves --
+    only write the token rclone already obtained into this remote's
+    config, the same as `rclone config create gdrive drive token '<pasted>'`
+    would do interactively.
+    """
+    import subprocess
+    data = request.get_json() or {}
+    token = (data.get("token") or "").strip()
+    if not token:
+        return jsonify({"error": "token is required (paste the output of 'rclone authorize \"drive\"')"}), 400
+
+    try:
+        result = subprocess.run(
+            ["rclone", "config", "create", Config.RCLONE_DRIVE_REMOTE, "drive", "token", token],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        return jsonify({"error": f"rclone invocation failed: {e}"}), 500
+
+    if result.returncode != 0:
+        return jsonify({"error": f"rclone config create failed: {result.stderr.strip()}"}), 400
+
+    return jsonify(_rclone_drive_status())

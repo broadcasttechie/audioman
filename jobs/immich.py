@@ -19,6 +19,7 @@ from datetime import timedelta
 import requests
 
 from config import Config
+from app.settings import get_config
 from .retry import call_with_retry
 
 PHOTO_PADDING = timedelta(minutes=5)
@@ -31,13 +32,14 @@ def fetch_photos_in_range(start, end, max_attempts=None):
     configured or nothing matches. Raises ServiceUnavailable if the
     request fails after retries.
     """
-    if not Config.IMMICH_API_URL:
+    immich_url = get_config("IMMICH_API_URL")
+    if not immich_url:
         return []
 
     def _fetch():
         response = requests.post(
-            f"{Config.IMMICH_API_URL}/api/search/metadata",
-            headers={"x-api-key": Config.IMMICH_API_KEY},
+            f"{immich_url}/api/search/metadata",
+            headers={"x-api-key": get_config("IMMICH_API_KEY")},
             json={
                 "takenAfter": start.isoformat(),
                 "takenBefore": end.isoformat(),

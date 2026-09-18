@@ -229,6 +229,22 @@ class JobRun(db.Model):
     log_tail = db.Column(db.Text)
 
 
+class Setting(db.Model):
+    """
+    DB-backed overrides for a small set of Config values that make
+    sense to change at runtime from the settings page (API keys,
+    remote URLs) rather than only via env var + restart. See
+    app/settings.py for the resolver — anything not in its
+    OVERRIDABLE set is env-var/config.py only, unaffected by this
+    table.
+    """
+    __tablename__ = "settings"
+
+    key = db.Column(db.String, primary_key=True)
+    value = db.Column(db.Text, nullable=False, default="")
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class JobQueueItem(db.Model):
     """
     The actual queue — see jobs/queue.py. One row per enqueued attempt
