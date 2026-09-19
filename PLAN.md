@@ -1104,6 +1104,35 @@ manual/embedded counting as confirmed). Added on top:
   `misc/field-recordings/{year}/` (today's fallback) versus a folder per
   outing. Not yet answered.
 
+### 18.5e Voice journey decisions (answered)
+
+- **Categories:** the user could not say what separates `voice-personal` from
+  `voice-project`. **Proposed:** one `voice` category; whether it belongs to a
+  project (or which) carries the difference. Cheap now: one real resource
+  exists and categories become data anyway (§17.1). Needs a yes.
+- **Location** matters little for voice; no full browsable map for it. The
+  §18.3 rule already covers this: the map lens appears only when a recording
+  has an exact location, so voice simply never asks for one.
+- **People are tags** (one pool, §18.4) — no separate people table. A speaker
+  label on a segment is just a tag on that segment. Later speaker
+  identification (§18.5) maps a voice profile to an existing tag rather than
+  creating a second identity system. Optional later refinement: a tag "kind"
+  (person / place / topic) purely for filtering and display.
+- **Private flag: build it (requested).** Recordings of identifiable people
+  need a way to keep them contained. Scope is **proposed, not yet confirmed**:
+  a `private` boolean on project, session and file, where a private parent
+  makes its children private. A private item is:
+  1. **excluded from the Drive `/Library` mirror** — Drive is a cloud service
+     and the user's stated constraint for voice/transcription is local only;
+  2. never sent to any external service (transcription is local regardless);
+  3. excluded from export/download links and any future sharing;
+  4. hidden from Library and search by default, shown with an explicit
+     "include private" toggle.
+  The Inbox path stays as-is (files arrive via Drive by necessity); once
+  filed, a private file's Drive copy in `_processed` is a separate question
+  (cleanup, §DEPLOYMENT) to raise with the user. **Open:** confirm scope, and
+  whether private files should be encrypted at rest or only excluded.
+
 ### 18.6 Build order (proposed)
 
 1. Timestamp/timezone contract and its dependent fixes (§17.5).
