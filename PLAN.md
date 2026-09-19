@@ -1375,6 +1375,49 @@ avoided. **Open:** whether the user switches a project's home over time, and
 how the change of home is done (an explicit "make Drive the home" action).
 Drive storage quota also matters for `both` (not yet checked).
 
+### 18.5k Placement decisions, Drive cost, and a broken Drive upload
+
+**Answered:** (1) placement is **a setting on the project** (`nas | drive |
+both`, with `home` = where it is edited); (2) a project's home **can be
+switched**, via an explicit action, for now; (3) the user wants to **reduce
+Drive use overall for cost** — about 300 GB free of 1 TB.
+
+**Consequences.**
+- **Default placement is `nas`.** Drive is the field Inbox plus opt-in
+  projects, not a second full library. The current hourly `nas-to-drive-library`
+  (whole-tree `rclone sync`) must not run as-is once placement exists; it
+  is replaced by per-file copies for projects flagged `both`/`drive`.
+- **Drive space is mostly held by originals in `Inbox/_processed`,** which the
+  app cannot delete (personal account, Editor rights, §DEPLOYMENT), so they
+  linger until the user deletes them. The biggest saving is therefore a
+  **reclaimable-space view**: list ingested originals whose NAS copy is
+  checksum-verified, with sizes and a total, so the user can delete them in
+  Drive knowing it is safe. That is the "outstanding cleanup" mechanism the
+  user asked for earlier, now with a cost reason. The archive import will
+  create ~340 such files.
+
+**FOUND — the NAS→Drive upload has been failing.** Checked live 2026-09-19:
+`nas-to-drive-library` errors on every run with Google 403
+`storageQuotaExceeded: Service Accounts do not have storage quota`. A service
+account can make folders (they exist under `Library/`) but cannot own files on
+a personal Drive, so **no file has ever been copied to Drive `/Library`**. It
+is harmless (rclone refuses to delete when there are IO errors) but the
+Drive-copy feature cannot work over the current folder-restricted
+service-account connection. Options, a security trade-off for the user:
+ a. *Least privilege (recommended):* keep the service account for the Inbox
+    (read + move within folders), and add a **second rclone remote using
+    OAuth with the `drive.file` scope**, which can only see files it created,
+    used solely for Library copies. Cannot touch the user's originals; cannot
+    reclaim `_processed`, which stays a manual delete guided by the
+    reclaimable list.
+ b. *Full OAuth as the owner:* one remote can upload and also delete
+    `_processed` (owner), but the token on the LXC can reach the whole Drive
+    (folder limits would then be client-side only). Simplest, broadest.
+ c. *Shared Drive:* not available on a personal account.
+**Open:** which option; not building Drive copies until decided. Because the
+default placement is `nas` this is not urgent, but the failing hourly job is
+noise and the `_processed` cleanup is the cost lever.
+
 ### 18.6 Build order (proposed)
 
 1. Timestamp/timezone contract and its dependent fixes (§17.5).
