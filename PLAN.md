@@ -1048,6 +1048,43 @@ that exist are a bonus. The user's kit is not believed to write any. So:
 - Sample filenames from each recorder (split-file and multitrack) are still
   owed and are now the *only* input to grouping, so they matter more.
 
+### 18.5c Date certainty: exact / approximate / unknown (stated)
+
+**Agreed:** filenames often carry a timestamp, so the source order in §18.5b
+stands (filename → embedded → mtime → manual, each recorded and only
+manual/embedded counting as confirmed). Added on top:
+
+- **Unknown date flag at import.** One of the user's recorders does not set
+  file times correctly at all. Files from such a recorder must arrive flagged
+  "date unknown — needs manual correction" rather than carrying a wrong guess.
+  This is a property of the **recorder profile** (§17.5), e.g.
+  `clock_reliable = false`: for that recorder mtime is never offered, and a
+  filename timestamp is only a suggestion if the pattern matches.
+- **Approximate date/time.** Some recordings only have an approximate
+  date/time — mainly show recordings, and some early ambient tests. These
+  must **not** be location-tagged: a fuzzy time would pull the wrong GPS
+  point. Proposed: `captured_at_precision` = `exact | approximate | unknown`
+  alongside `captured_at_source`. Location enrichment (Dawarich lookup) and
+  the map pin run only for `exact`; `approximate`/`unknown` recordings appear
+  under an "unlocated" filter and can still take a manual location.
+- The intake queue gets a derived "needs date" state for `unknown`.
+- Note: the round-trip bug that shifted 09:00 to 08:00 in the detail screen
+  (§17.5, naive vs Z serialisation) is a code issue, not user error, and
+  stays open until the timestamp contract is implemented.
+
+### 18.5d Field recordings journey (agreed points)
+
+- Recordings are mostly **short takes**, some up to about an hour, so both
+  shapes must work: a short take shows a **pin**; a long take can also show
+  its **track**.
+- **Dawarich is logging constantly**, so location for an `exact` date is
+  normally available; a gap in the log is the exception and is shown as
+  "no location found", not an error.
+- **Global map view (wanted):** a map of all located recordings with a pin
+  (clustered) per recording, like the Places view in photo managers;
+  filterable by category, tag and date; a pin opens the recording. Distinct
+  from the per-recording map lens (§18.3).
+
 ### 18.6 Build order (proposed)
 
 1. Timestamp/timezone contract and its dependent fixes (§17.5).
