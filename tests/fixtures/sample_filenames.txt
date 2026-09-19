@@ -1,0 +1,62 @@
+# Real filenames from the user's Drive archive ("Audio recording" folder),
+# gathered 2026-09-19 to drive the filename patterns (PLAN §17.6 / §18.5f).
+# Format: <recorder guess> | <filename> | <size MB>
+
+# --- Insta360 mic, 32-bit float stereo (the 30-minute splitter) ---
+# 691.274 MB = 1800 s (48 kHz x 2ch x 4 B), so parts are exactly 30:00.
+# Next part's filename time is ~2 s after start+30:00.
+insta360 | audio_260917_091124_32bit_orig_stereo.wav | 346
+insta360 | audio_260917_100746_32bit_orig_stereo.wav | 691   # split part 1 (10:07:46)
+insta360 | audio_260917_103748_32bit_orig_stereo.wav | 691   # part 2 (+30:02)
+insta360 | audio_260917_110748_32bit_orig_stereo.wav | 408   # part 3 (+30:00), partial
+insta360 | audio_260914_145838_32bit_orig_stereo.wav | 691   # part 1
+insta360 | audio_260914_152840_32bit_orig_stereo.wav | 355   # part 2 (+30:02), partial
+insta360 | audio_260914_191744_32bit_orig_stereo.wav | 224   # separate take (gap not 30:00)
+insta360 | audio_260914_192731_32bit_orig_stereo.wav | 257
+insta360 | audio_260913_191831_32bit_orig_stereo.wav | 590
+
+# --- Insta360 mic, 24-bit, clock NOT set: year 2000 in the filename ---
+# HHMMSS here is time since power-on, not a wall clock: unknown date.
+insta360-noclock | audio_000101_000228_24bit_orig.wav | 0.07
+insta360-noclock | audio_000101_000433_24bit_orig.wav | 0.46
+insta360-noclock | audio_000101_000707_24bit_orig.wav | 259
+insta360-noclock | audio_000101_003709_24bit_orig.wav | 154
+insta360 | audio_260913_184515_24bit_orig.wav | 50    # 24-bit but clock was set
+
+# --- Zoom (H1n-style), YYMMDD-HHMMSS, optional free-text description ---
+zoom | 240818-210658.WAV | -
+zoom | 240821-101757.WAV | 4
+zoom | 240821-105248.WAV | 473
+zoom | 250424-114713.WAV | 19
+zoom | 250424-121237.-woods-includes-voices.WAV | 453
+zoom | 250424-115151- Parkridge NR Birds and Jacob.WAV | -
+zoom | 250424-115254-Jacob at Parkridge NR.WAV | -
+zoom | 250424-121237-Parkridge Nature Reserve-EDIT.WAV.wav | -   # user edit
+zoom | 260822-144229 - waking from nap Shuttleworth airplanes.WAV | 17
+zoom | 250822-... - Bournville bells.WAV | -
+zoom | ZOOM0001.WAV | 8     # older Zoom naming: no date at all
+zoom | ZOOM0009.WAV | 2
+
+# --- Zoom stereo, STE-NNN: no date at all; context only in the folder name ---
+zoom-ste | 2024 France/STE-000.wav | 9
+zoom-ste | Wyre Forrest 9th Nov 2024/STE-005.wav | -
+zoom-ste | storiesandforrest/STE-001.mp3 | -           # mp3 derivative alongside
+
+# --- Phone voice-memo apps, several date styles, one with no year ---
+phone | 2025-08-27_184647372.wav | 3       # date_time-with-milliseconds
+phone | 27-04-2025, 15-42.wav | 1          # DD-MM-YYYY, HH-MM
+phone | 29-04-2025, 19-21.wav | 139
+phone | Wednesday at 11-30.m4a | -          # weekday only, no date
+phone | 5 Sept at 10-04.m4a | -             # no year
+phone | 2026-07-08 Down at the station.wav | -   # date + user title
+
+# --- Hand-named, no date ---
+manual | yellow.wav | -
+manual | sing a song of sixpence .wav | -
+
+# --- Sidecars/derivatives to ignore (REAPER peaks etc.) ---
+ignore | STE-002.wav.reapeaks | -
+ignore | hats carrots raw.pkf | -
+
+# NOT FOUND on this machine: any multitrack-recorder files (one file per
+# track). Still owed by the user.

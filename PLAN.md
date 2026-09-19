@@ -1133,6 +1133,49 @@ manual/embedded counting as confirmed). Added on top:
   (cleanup, §DEPLOYMENT) to raise with the user. **Open:** confirm scope, and
   whether private files should be encrypted at rest or only excluded.
 
+### 18.5f Real filename inventory (from the user's Drive archive, 2026-09-19)
+
+Surveyed by listing filenames only (no file contents) in the Drive
+"Audio recording" folder on the user's Mac; samples saved in
+`tests/fixtures/sample_filenames.txt`. Findings that shape the design:
+
+- **Several recorders, several patterns; the app needs per-recorder
+  profiles selected by filename pattern** (§17.6): Zoom `YYMMDD-HHMMSS.WAV`
+  (largest set, ~125 files; also older `ZOOMNNNN.WAV`), Zoom stereo
+  `STE-NNN.wav` (no date at all), Insta360 mic
+  `audio_YYMMDD_HHMMSS_{24|32}bit_orig[_stereo].wav`, phone voice-memo apps
+  (`2025-08-27_184647372.wav`, `27-04-2025, 15-42.wav`, and `5 Sept at 10-04.m4a`
+  with no year), and hand-named files with no date.
+- **The 30-minute splitter is the Insta360 mic.** 32-bit float stereo parts
+  are exactly 1800 s (691.27 MB); the next part's filename time is ~2 s
+  after start+30:00, so adjacency needs a tolerance of a few seconds, not
+  exact equality. Confirmed chains: 2026-09-17 10:07:46 → 10:37:48 → 11:07:48
+  (3 parts) and 2026-09-14 14:58:38 → 15:28:40 (2 parts). The last part is
+  short. A shorter file followed by a non-30:00 gap is a separate take, not a
+  split.
+- **The unreliable-clock recorder is also the Insta360 mic in 24-bit mode**:
+  its earlier files are named `audio_000101_HHMMSS_…` (1 Jan 2000, HHMMSS
+  since power-on). A filename year of 2000 (or 1970) is therefore a **rule to
+  mark the date unknown** (§18.5c), not something to parse. The time-of-day
+  in those names still orders takes within one power-on. Later files carry
+  real dates, so the clock was set at some point (13 Sep 2026).
+- **User-written descriptions follow the timestamp** with inconsistent
+  separators (` - `, `-`, `- `, `.-`, e.g.
+  `250424-121237.-woods-includes-voices.WAV`). The pattern should split
+  timestamp from a free-text remainder and offer the remainder as the
+  **title/notes suggestion**, not throw it away.
+- **Existing outing structure confirms the grouping idea (§18.5d):**
+  Zoom takes cluster into obvious outings (e.g. 2025-04-24 Parkridge: seven
+  takes within about 1h20m; 2025-05-25 and 2024-08-21/22 similar).
+- **Edits and derivatives live beside the originals:** `-EDIT` renders,
+  `.mp3` copies, REAPER `.reapeaks` / `.pkf` sidecars. Ingest should ignore
+  sidecar extensions and treat an "EDIT" sibling as a *related* file, not a
+  duplicate original (open question for the user).
+- **The archive already has ~340 files, so a bulk import path is needed,**
+  not just the Inbox trickle. **Open:** whether the archive should be
+  imported (and where the user's REAPER project folders sit).
+- **No multitrack-recorder files were found** in this folder. Still owed.
+
 ### 18.6 Build order (proposed)
 
 1. Timestamp/timezone contract and its dependent fixes (§17.5).
