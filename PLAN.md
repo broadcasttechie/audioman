@@ -945,10 +945,10 @@ answered by the user; **Proposed** are still to be confirmed.
   session; multitrack files stay separate files in the session.
 - A single loose recording is a project of one session of one file; the UI
   hides that scaffolding rather than making the user create it.
-- **Proposed — open:** whether two recorders on the same night (e.g. a
-  multitrack desk plus a stereo ambient pair) are one session with several
-  file groups, or two sessions on the same night. To settle in the event
-  journey.
+- **Agreed — one session per night, for now.** Two recorders on the same
+  night (e.g. a multitrack desk plus a stereo pair) are therefore one session
+  containing several file groups. A soundcheck/show split within a night is
+  not modelled; revisit if it becomes a real need.
 
 ### 18.2 Free-text notes everywhere
 
@@ -1021,6 +1021,32 @@ necessarily on the app server.
   snippet and a play-from-here.
 - **Behaviour follows content, not category:** anything containing speech can
   be transcribed; a category only sets the default policy.
+
+### 18.5b Assume no embedded metadata (stated)
+
+**Agreed:** design as if recordings carry **no embedded tags at all**; any
+that exist are a bonus. The user's kit is not believed to write any. So:
+
+- **Track names come from filenames only** (e.g. `TR01`, channel numbers), via
+  the §17.6 patterns. No reliance on iXML/BWF track names.
+- **`captured_at` and grouping** (§17.7 split/multitrack detection) cannot
+  rely on trusted tags either. Sources, in order: a filename pattern
+  timestamp, then embedded tag if present, then file mtime, then manual
+  entry. Every value records *which source* produced it, and only a manual
+  or embedded value counts as confirmed; filename/mtime values are
+  suggestions the user confirms at intake.
+- **This bends §4**, which today takes a timestamp only from trusted embedded
+  tags and otherwise leaves it null. **Needs the user's explicit OK** before
+  ingest changes. Note the one real file so far
+  (`audio_260917_091124_32bit_orig_stereo.wav`) has a timestamp in its name
+  that does not match the date the user entered by hand (2026-09-15), so
+  filename timestamps can't be trusted blindly either — hence "suggest, then
+  confirm".
+- ffprobe still supplies duration, channels and sample rate, which are the
+  main signals for grouping tracks of one multitrack take (same duration,
+  adjacent or identical start).
+- Sample filenames from each recorder (split-file and multitrack) are still
+  owed and are now the *only* input to grouping, so they matter more.
 
 ### 18.6 Build order (proposed)
 
