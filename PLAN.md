@@ -1235,6 +1235,93 @@ Surveyed by listing filenames only (no file contents) in the Drive
 - Point data is plentiful: 632 points in 90 minutes around the target, so
   short takes and hour-long tracks are both well served.
 
+### 18.5i Sidecars, DAW project files, disk queue, waveforms (answered)
+
+**Disk-space queue — BUILT** (`jobs/disk_budget.py`, wired into
+`drive_inbox_pull`). A pulled file waits in `STAGING_DIR` for review, and
+staging shares a 16 GB disk (about 15 GB free when measured) with the app, so a
+bulk import must not fill it. Before each pull a file must satisfy two limits:
+free space stays above `DISK_RESERVE_GB` (3) and bytes awaiting review stay
+within `STAGING_BUDGET_GB` (6); plus `INBOX_MAX_FILES_PER_RUN` (10). A file
+that doesn't fit **stays in the Drive Inbox** with its queue position and
+stability clock intact and is pulled on a later run. Oldest-seen first;
+head-of-line (once one waits, later ones wait behind it); a file larger than
+the whole budget is skipped loudly without blocking others. Held-back files
+are listed in the job's log tail / result (`deferred`). Verified: 7 unit tests
+and a 6-case run against the real Postgres with rclone/ingest faked, plus a
+real pull afterwards. **Not verified / limits:** the limits are env vars, not
+yet on the settings page; the budget only counts staging, so until the NFS
+export is mounted (`NAS_LIBRARY_ROOT` is on the same root disk) filed files
+also consume it — the reserve still protects the disk, but **do not drop the
+archive into the Inbox before the NAS is mounted.**
+
+**Sidecars follow their audio (stated).** `.reapeaks` / `.pkf` are
+regenerable but should be kept. Proposed: a file `role = sidecar`, attached to
+its audio by name (`X.wav.reapeaks`, `X.pkf` → `X.wav`), never ffprobed,
+never shown in review, moved with the audio to the same NAS folder and
+mirrored to Drive, and not indexed for search. A sidecar whose audio hasn't
+arrived is held in the Inbox rather than ingested as a failure. They count
+against the disk budget. Extension list is a setting.
+
+**DAW project files live in the project folder and are edited in place
+(stated).** Reaper/Audition projects sit beside the audio on the NAS. This
+changes the storage rules:
+- Two kinds of file: **immutable sources** (audio; checksum-guarded, any drift
+  is an alarm — `verify-integrity` §5) and **mutable working files** (project
+  files, peak caches, sidecars; edited by other programs, no drift alarm).
+  Editing is non-destructive, so sources never change.
+- They are created *after* filing and never pass through the Inbox, so they
+  must be **adopted by a scan** of the project folder (today `find-orphans`
+  would just flag them as unknown). Proposed: adopt as `role = project-file`
+  with the DAW type inferred from extension; the mirror job already carries
+  them to Drive.
+- **Refiling can break a DAW project** (moved audio leaves its references
+  dangling). A project containing project files must move as a whole folder
+  or refuse/warn; the template-change-isn't-retroactive rule (§2) already
+  helps. **Open:** how the user opens them (SMB from the Mac?) and whether
+  Reaper references are relative or absolute.
+
+**Waveforms — plan (not built), adapted from the media-curator handover.**
+Fits our architecture better than theirs: the queue is durable Postgres, so
+none of their in-process queue/generation-counter machinery or the
+"exactly one server process" restriction applies.
+- A `generate-waveform` job in the existing queue, enqueued after ingest
+  (the file is on local staging then, so it's fast). Opening a file that has
+  none enqueues it at high priority; needs priority support in
+  `jobs/queue.py` if absent (not checked).
+- **Cache keyed by content checksum** (already stored) plus generator
+  version/params, not path+mtime: it survives refiling, and an edit is a new
+  file, so invalidation is automatic. On local disk, not the NAS, e.g.
+  `/var/lib/audio-manager/waveforms/<sha[:2]>/<sha>.dat`; deleted with its
+  resource. Each entry records engine, generator version and params.
+- Generator: `audiowaveform`, fed through `ffmpeg -ac 1 -af highpass=f=80
+  -f wav -` (mono display mix, hum removed, no resample), `-z <spp>` with
+  `spp` from the real sample rate, `--bits 8`, `--output-format dat`. Their
+  rules kept: the flag is `-z`; run the tool once and check the exit code;
+  every subprocess has a timeout and `nice`; ffmpeg's stdout closed in the
+  parent; on timeout kill both; **log rc + stderr and record `engine` on any
+  fallback, and test the primary path** (2 s sine fixture asserting
+  `engine == audiowaveform`).
+- **One dense tier, not five**: about 100 peaks/s (spp = rate/100), roughly
+  0.7 MB per hour as native binary `.dat`, handed to Peaks.js **unchanged**
+  (its header carries sample rate and spp), which removes the handover's
+  playhead-drift bug (their §5.2 "cleaner, untested" route — untested here
+  too). Extra tiers only if zoom proves insufficient. Normalisation is a
+  display choice, done client-side per file (untested).
+- **`audiowaveform` is not installed on the container** (apt has no
+  candidate). It would need BBC's release package or a build — a download
+  that needs the user's OK.
+- Playback: `/api/resources/<id>/audio` uses `send_file(conditional=True)`
+  and **measured 206 with correct Content-Range** direct from Flask (through
+  nginx not yet measured — their lesson: check Range before blaming the
+  waveform).
+- Front end: Peaks.js v3 + Konva, **vendored at pinned versions** in
+  `app/static` (no runtime CDN), with their custom player adapter and init
+  order (fetch duration first; double-rAF init; resize handling). Verify with
+  numbers (peaks vs full-band envelope correlation, playhead drift, click
+  accuracy) and remember hidden tabs pause `requestAnimationFrame`, which
+  looks exactly like "waveform won't load" in my automated browser.
+
 ### 18.6 Build order (proposed)
 
 1. Timestamp/timezone contract and its dependent fixes (§17.5).

@@ -7,6 +7,7 @@ abort the rest of the batch.
 """
 import json
 import os
+import shutil
 import subprocess
 from datetime import datetime, timedelta
 
@@ -14,6 +15,7 @@ from config import Config
 from app.extensions import db
 from app.models import PendingUpload, FileEvent, JobRun
 from .ingest import ingest_staged_file, _fail
+from . import disk_budget
 
 
 def _cmd_error_detail(e):
@@ -77,20 +79,49 @@ def drive_inbox_pull():
         _record_run("drive-inbox-pull", "error", detail)
         return {"status": "error", "detail": detail}
 
-    pulled, failed = [], []
+    pulled, failed, deferred = [], [], []
     now = datetime.utcnow()
+
+    # Oldest-seen first, so a bulk drop is drained in arrival order and a
+    # big file can't be starved by smaller ones that arrive after it.
+    pending = {p.path: p for p in PendingUpload.query.all()}
+    entries.sort(key=lambda e: (pending[e["Path"]].first_seen_at if e["Path"] in pending else now, e["Path"]))
+
+    os.makedirs(Config.STAGING_DIR, exist_ok=True)
+    reserve = Config.DISK_RESERVE_GB * disk_budget.GB
+    budget = Config.STAGING_BUDGET_GB * disk_budget.GB
+    staged = disk_budget.staged_bytes(Config.STAGING_DIR)
+    held_reason = None  # once one file has to wait, everything behind it waits too
 
     for entry in entries:
         path = entry["Path"]
         size = entry["Size"]
         modtime = entry["ModTime"]
 
-        previous = PendingUpload.query.get(path)
+        previous = pending.get(path)
         unchanged = previous and previous.size == size and previous.modtime == modtime
 
         if unchanged:
             age = now - previous.first_seen_at
             if age >= timedelta(minutes=Config.MIN_AGE_MINUTES):
+                # Disk admission. A file that doesn't fit is left alone
+                # in the Inbox (its PendingUpload row is kept, so its
+                # stability clock and its place in the queue survive).
+                if held_reason is None and len(pulled) >= Config.INBOX_MAX_FILES_PER_RUN:
+                    held_reason = f"per-run cap of {Config.INBOX_MAX_FILES_PER_RUN} files reached"
+                if held_reason is None:
+                    verdict, reason = disk_budget.admit(
+                        size, shutil.disk_usage(Config.STAGING_DIR).free, staged, reserve, budget)
+                    if verdict == disk_budget.NEVER:
+                        # Would block the queue forever; skip it loudly, keep going.
+                        deferred.append(f"{path} ({reason})")
+                        continue
+                    if verdict == disk_budget.WAIT:
+                        held_reason = reason
+                if held_reason is not None:
+                    deferred.append(f"{path} ({held_reason})")
+                    continue
+
                 try:
                     subprocess.run(
                         ["rclone", "copy", f"{remote_path}/{path}", Config.STAGING_DIR],
@@ -109,6 +140,7 @@ def drive_inbox_pull():
                     continue
 
                 pulled.append(path)
+                staged += size
                 db.session.delete(previous)
                 db.session.commit()
 
@@ -161,8 +193,11 @@ def drive_inbox_pull():
 
     db.session.commit()
     status = "partial" if failed else "success"
-    _record_run("drive-inbox-pull", status, f"pulled: {pulled}, failed: {failed}")
-    return {"status": status, "pulled": pulled, "failed": failed}
+    log = f"pulled: {pulled}, failed: {failed}"
+    if deferred:
+        log += f", held back in Inbox ({len(deferred)}): {deferred[:5]}"
+    _record_run("drive-inbox-pull", status, log)
+    return {"status": status, "pulled": pulled, "failed": failed, "deferred": deferred}
 
 
 def nas_to_drive_library():

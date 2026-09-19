@@ -39,6 +39,14 @@ class Config:
     # --- Inbox stability check ---
     MIN_AGE_MINUTES = int(os.environ.get("MIN_AGE_MINUTES", 5))
 
+    # --- Inbox pull: disk-space admission (jobs/disk_budget.py) ---
+    # Pulled files wait in STAGING_DIR for review, and staging shares a
+    # small disk with the app, so a bulk import must not fill it. A file
+    # that doesn't fit stays in the Drive Inbox and is pulled later.
+    DISK_RESERVE_GB = float(os.environ.get("DISK_RESERVE_GB", 3))          # always left free on the disk
+    STAGING_BUDGET_GB = float(os.environ.get("STAGING_BUDGET_GB", 6))      # max bytes awaiting review/filing
+    INBOX_MAX_FILES_PER_RUN = int(os.environ.get("INBOX_MAX_FILES_PER_RUN", 10))
+
     # --- Folder pattern (Pattern C) ---
     # Rendered against a dict of: project, category, year, filename
     # Falls back to the second template when `project` is None/empty.
