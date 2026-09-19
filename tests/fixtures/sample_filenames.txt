@@ -33,7 +33,6 @@ zoom | 250424-115151- Parkridge NR Birds and Jacob.WAV | -
 zoom | 250424-115254-Jacob at Parkridge NR.WAV | -
 zoom | 250424-121237-Parkridge Nature Reserve-EDIT.WAV.wav | -   # user edit
 zoom | 260822-144229 - waking from nap Shuttleworth airplanes.WAV | 17
-zoom | 250822-... - Bournville bells.WAV | -
 zoom | ZOOM0001.WAV | 8     # older Zoom naming: no date at all
 zoom | ZOOM0009.WAV | 2
 
