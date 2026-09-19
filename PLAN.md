@@ -1085,6 +1085,25 @@ manual/embedded counting as confirmed). Added on top:
   filterable by category, tag and date; a pin opens the recording. Distinct
   from the per-recording map lens (§18.3).
 
+**Field journey decisions (answered):**
+- **Grouping: yes.** Short takes close in time and place are *suggested* as one
+  session (an outing/walk), never auto-merged; the user confirms or splits.
+  Thresholds are settings, not constants. Grouping needs `exact` dates
+  (§18.5c), so approximate/unknown recordings are never suggested into a
+  walk.
+- **Map tiles: OpenStreetMap is acceptable** (external tile fetch from the
+  browser). Keep attribution and light usage per OSM's tile policy; the tile
+  URL is a setting so it can be swapped for self-hosted tiles later.
+- **Place names: yes**, a readable name on each located recording.
+  **Open:** the source. Preferred order: whatever reverse-geocoding Dawarich
+  already does (no new outbound calls), else a geocoder. A public Nominatim
+  sends coordinates outside the LAN and has rate/usage limits; self-hosted
+  Photon/Nominatim is the local option. The name is cached on the location
+  row and editable by hand, so a geocoder outage never blocks anything (§12).
+- **Open:** where a loose (no-project) field take is filed on the NAS —
+  `misc/field-recordings/{year}/` (today's fallback) versus a folder per
+  outing. Not yet answered.
+
 ### 18.6 Build order (proposed)
 
 1. Timestamp/timezone contract and its dependent fixes (§17.5).
