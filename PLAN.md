@@ -1176,6 +1176,65 @@ Surveyed by listing filenames only (no file contents) in the Drive
   imported (and where the user's REAPER project folders sit).
 - **No multitrack-recorder files were found** in this folder. Still owed.
 
+### 18.5g Archive import, file roles, multitrack, NAS paths (answered)
+
+- **Archive import goes through the Inbox routine — no separate import
+  feature (stated).** Consequences found in the code, to be handled *before*
+  the archive is dropped in (~340 files, tens of GB):
+  - `drive_inbox_pull` lists only the top level of `/Inbox` (`rclone lsjson`
+    without `-R`), so files in subfolders are not seen. Needs recursion; the
+    relative path is already kept in `drive_inbox_path` and re-created under
+    `_processed`, so folder names survive as hints (matters for `STE-` files,
+    §18.5f, whose only context is the folder).
+  - There is no extension filter, so `.reapeaks`/`.pkf` sidecars would be
+    ingested and land as `failed`. Needs an ignore/allow list (setting).
+  - Throughput and disk: cap files per run; check staging free space.
+  - 340 items in the review queue need **batch actions** (select many, apply
+    category/project/tags), otherwise the review journey doesn't scale.
+- **Edited versions are the same recording (stated).** `-EDIT` files
+  ("cleaned up / trimmed") are versions of an original, and this is exactly
+  why a project/session is a *bundle of files with different purposes*.
+  **Proposed:** a file `role` (`original | edit | export | reference`) and a
+  nullable `derived_from` link inside the session. Suggest the link when an
+  edit's filename shares the original's timestamp/prefix (never automatic).
+  The original stays the primary for date, place and category; edits inherit
+  them. **Segments/transcripts belong to one file**: a trimmed edit shifts
+  time offsets, so segments are not copied between versions. Existing clip
+  exports (§15) are the same idea and become `role = export`.
+- **Multitrack: best-effort default, no sample files yet (stated: user will
+  import those later as new items).** Detect from signals, not names:
+  simultaneous files (start within a few seconds), equal duration and sample
+  rate, same shared filename prefix with a varying number/label
+  (`TR1…TRn`, `CH01`, `_1`). With no timestamps in the names, arrival in the
+  same Inbox batch/folder plus equal duration is the fallback. The varying
+  part of the name becomes the **track label**; the user can rename. Always
+  a suggestion. Revisit with real files.
+- **Loose files are filed by year and month (stated):** default template
+  `misc/{category}/{year}/{month}/{filename}` (month zero-padded), a config
+  change to the existing template (§2), so it is not retroactive. Project
+  files stay `{project}/…` (session sub-folder per §18.1 to be decided at
+  restructure time).
+
+### 18.5h Dawarich check against the test file (read-only, 2026-09-19)
+
+- **The filename time is correct local time** (`YYMMDD_HHMMSS`, BST):
+  `audio_260917_091124…` = 2026-09-17 09:11:24 BST = 08:11:24 UTC. Nearest
+  Dawarich point was 22 s away and **62 m from Stoke-on-Trent station**,
+  matching the user's expectation. So both the pattern reading and the
+  BST-as-UTC+1 handling are confirmed on real data.
+- The value stored on that resource (2026-09-15 08:11) is a different day and
+  ~12 km from the station under either UTC or BST reading, so the *date* was
+  mis-entered; the time-of-day was right. Not corrected — the user's data.
+- **Dawarich returns no place names:** `city`, `country`, `geodata` are empty
+  and `reverse_geocoded_at` is null on these points (reverse geocoding is
+  evidently not enabled on the instance). So place names need a source we
+  control. Options: enable geocoding in Dawarich; call a geocoder from this
+  app once per recording, cached on the location row (public Nominatim is
+  fine at that volume but sends coordinates to OSM, consistent with the
+  user's OK for OSM tiles); or self-host Photon/Nominatim. **Open.**
+- Point data is plentiful: 632 points in 90 minutes around the target, so
+  short takes and hour-long tracks are both well served.
+
 ### 18.6 Build order (proposed)
 
 1. Timestamp/timezone contract and its dependent fixes (§17.5).
