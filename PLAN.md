@@ -1308,9 +1308,8 @@ none of their in-process queue/generation-counter machinery or the
   playhead-drift bug (their §5.2 "cleaner, untested" route — untested here
   too). Extra tiers only if zoom proves insufficient. Normalisation is a
   display choice, done client-side per file (untested).
-- **`audiowaveform` is not installed on the container** (apt has no
-  candidate). It would need BBC's release package or a build — a download
-  that needs the user's OK.
+- **`audiowaveform`** was not in apt; it has since been installed from BBC's
+  release package with the user's OK (see §18.5j).
 - Playback: `/api/resources/<id>/audio` uses `send_file(conditional=True)`
   and **measured 206 with correct Content-Range** direct from Flask (through
   nginx not yet measured — their lesson: check Range before blaming the
@@ -1321,6 +1320,60 @@ none of their in-process queue/generation-counter machinery or the
   numbers (peaks vs full-band envelope correlation, playhead drift, click
   accuracy) and remember hidden tabs pause `requestAnimationFrame`, which
   looks exactly like "waveform won't load" in my automated browser.
+
+### 18.5j audiowaveform installed; Reaper paths measured; storage is not a mirror
+
+**audiowaveform — INSTALLED on the container (with the user's OK).** v1.10.2
+from BBC's GitHub release, the Debian 12 build
+`audiowaveform_1.10.2-1-12_amd64.deb` (the `-13` build is Debian 13; a web
+summary I fetched first misread this, so the package was chosen from the raw
+GitHub API listing). GitHub publishes no checksum for that build; the sha256
+I computed on download is `63ef3226097e7dc7f17104b353f540f3d423191d675fdde4d00665fca231c5cf`
+(169,730 bytes, matching the API's size). Note this is 1.10.2, not the 1.11.1
+the media-curator handover mentions (1.11.x has no GitHub release that I
+could see). **Measured:** a 2 s sine fixture through
+`ffmpeg | audiowaveform … --output-format dat -z 441 --bits 8` exits 0 and
+gives 200 points; the real 346 MB, 48 kHz stereo 32-bit-float file (901.8 s)
+gives 90,181 points at spp 480 = 901.81 s, sample_rate and spp carried in the
+header, i.e. a 180 KB `.dat` for 15 minutes. Not yet measured: run time,
+correlation against a full-band envelope, the generator wired into a job.
+That file's data chunk ends mid-frame (ffmpeg warns "Invalid PCM packet");
+harmless but the job must not treat an ffmpeg warning as failure.
+
+**Reaper paths — measured on the user's real project** (`H1n tests/1/1.RPP`,
+only its `FILE` lines read): all 12 media references are **bare relative
+filenames** (audio sits in the same folder as the `.RPP`), none absolute.
+REAPER stores a relative path when the media is under the project folder,
+absolute otherwise (web sources conflict; this file is the evidence). So: a
+project folder moved *as a whole* keeps working; **renaming or moving an
+audio file inside it breaks the reference.** Rules that follow: never rename
+an original once filed (suggested titles from filename suffixes must go to
+title/notes, not the filename), refiling moves a whole project folder or
+nothing, and the audio + `.RPP` layout inside a project folder is preserved
+as found.
+
+**Storage is not a mirror (stated).** Items may need to exist on the NAS, on
+Google Drive, or both — decided per item — and the user opens project files
+from either place. §1's one-way "NAS → Drive `/Library` sync" no longer fits:
+`rclone sync` of a whole tree is all-or-nothing and deletes at the destination
+what isn't at the source. **Proposed replacement:** a per-file record of
+where copies exist (`file_copies`: file, location `nas|drive`, remote path/id,
+checksum, verified-at, state) driven by a **placement policy** on
+project/session/file (`nas`, `drive`, `both`; project default, file override),
+with copy jobs per file (`rclone copyto`, never `sync`, never delete) and the
+UI showing badges for where each thing lives. `library-verify` /
+`find-orphans` become per-file checks against those records.
+
+**The hard part is mutable files.** Audio is immutable, so a second copy is
+easy to keep correct. Reaper/Audition projects are edited in place, and if
+both a NAS copy and a Drive copy can be edited they diverge. **Proposed rule:**
+each project has one **home** (where it is edited); the other location is a
+copy, refreshed one way from home. If the non-home copy is found changed
+(checksum differs from what the app last wrote), **flag a conflict and do not
+overwrite** — consistent with "never silently discard". Bidirectional sync is
+avoided. **Open:** whether the user switches a project's home over time, and
+how the change of home is done (an explicit "make Drive the home" action).
+Drive storage quota also matters for `both` (not yet checked).
 
 ### 18.6 Build order (proposed)
 
