@@ -921,3 +921,114 @@ whether the full GPS *track* is fetched at all versus just the pin (a voice
 memo doesn't need a track; wasted Dawarich calls otherwise). **Open:** what
 the traits are, and whether a category with no map flag still gets a pin.
 
+
+## 18. Workflow and model redesign (agreed in discussion; nothing built yet)
+
+Supersedes §17.8's "map flag on the category" and refines §3's flat
+Resource-with-optional-Project shape. Decisions marked **Agreed** were
+answered by the user; **Proposed** are still to be confirmed.
+
+### 18.1 Model: Project → Session → File
+
+- **Agreed — vocabulary:** the middle level is called a **session**
+  (rather than "recording", which is ambiguous between a take and a file).
+- **Agreed — multitrack is one track per file** (mono files, one per input),
+  so a multitrack session is N files with the same start time and duration.
+  No polyphonic-file handling needed.
+- **Agreed — a show over several nights is one Project with one Session per
+  night.** That covers the "nested project" example, so **project nesting is
+  not needed** and is dropped; revisit only if a case appears that sessions
+  can't express.
+- A **session** is what gets reviewed, dated, located and filed as a unit; a
+  **file** is a physical audio file (a split part, or one track of a
+  multitrack). Split files (§17.7) still join into one file *within* a
+  session; multitrack files stay separate files in the session.
+- A single loose recording is a project of one session of one file; the UI
+  hides that scaffolding rather than making the user create it.
+- **Proposed — open:** whether two recorders on the same night (e.g. a
+  multitrack desk plus a stereo ambient pair) are one session with several
+  file groups, or two sessions on the same night. To settle in the event
+  journey.
+
+### 18.2 Free-text notes everywhere
+
+**Agreed (new):** every level needs a free-text description/notes field —
+**project, session, file, and segment/clip**. Distinct from the title and
+from tags: long-form, unstructured, searchable in the same full-text index as
+transcripts (§18.5). Check what `Project`, `Resource` and `Clip` already
+carry before adding columns; the manage page (§17.2) edits project notes.
+
+### 18.3 Navigation
+
+- **Agreed — a Home page** as a separate overview (library counts, recent
+  projects), as a fourth tab. (The user's answer was tentative — "yes???" —
+  so treat as provisional until seen.)
+- **Proposed:** browse by category in the UI; the project is the physical
+  container on the NAS. Category is a *filter/lens* over projects, not a
+  folder level, so a project spanning several categories is still one
+  folder. Needs the user's confirmation — the question was not understood as
+  first phrased.
+- **Agreed direction:** "ambient" becomes **Field recordings** (label only —
+  slug can stay until §17.1 categories are configurable).
+- **Agreed direction:** the map/track view is a **lens available on any
+  session or file that has location data**, not tied to one category. A
+  category may still set a *default* (e.g. field recordings open on the map).
+
+### 18.4 Voice recordings: section-level tagging (SFX-library style)
+
+Voice material is organised like an SFX library: the unit of search is a
+**segment** — a time range within a file — not just the file. Example:
+find Jacob saying a particular phrase and land on that moment.
+
+- **Agreed — one tag pool.** Segment tags come from the same pool as file
+  and project tags; the UI shows which level a tag was applied at.
+- A segment carries: start/end, tags, free-text notes (§18.2), optional
+  transcript text, optional speaker. The existing `Clip` becomes one use of a
+  segment (a segment can be exported; not every segment is).
+- **Agreed — segments export as WAV markers/regions** (BWF/iXML-style) so
+  they appear in a DAW. Format details to design at build time.
+- Manual segment tagging works with no ML and ships first; transcription
+  (§18.5) pre-populates segments rather than replacing manual ones.
+
+### 18.5 Transcription and speaker identification (local only)
+
+**Hard constraint (stated): local only — no cloud services.** Not
+necessarily on the app server.
+
+- **Engine:** Whisper-family model (faster-whisper / whisper.cpp) with
+  word-level timestamps; voice-activity detection first so only speech is
+  transcribed; known names fed as a vocabulary hint. English.
+- **Volume (stated):** under an hour of voice so far, mostly a small set of
+  ~3 known people. So transcribe-everything-on-ingest is affordable and
+  speaker identification is a realistic small closed-set problem. Diarise
+  (who spoke when) then **suggest** names from a few user-labelled examples;
+  never apply a name silently. Voice profiles of real people are biometric
+  data — stored locally only, deletable per person.
+- **Where it runs — leaning:** the user would like to keep it on Proxmox but
+  accepts the Mac is far stronger and a small worker app there is
+  reasonable. Design for **a transcription worker that is not the web
+  container**: it claims only `transcribe` jobs and reports through an HTTP
+  API with a token, rather than opening the database to the LAN. If that
+  worker is off, jobs wait (same self-healing pattern as enrichment, §12).
+  **Open:** Mac worker vs a Proxmox VM/CT with a GPU — depends on hardware
+  available on the cluster (not yet checked).
+- **Corrections** are stored as verified and never overwritten by a
+  re-transcription. Split files are joined before transcribing so a phrase
+  spanning a boundary isn't cut. In a multitrack session with one mic per
+  person the *track* already identifies the speaker; no ML needed.
+- **Search:** Postgres full-text search plus trigram over transcripts,
+  notes, tags, filenames and project titles; results for segments show the
+  snippet and a play-from-here.
+- **Behaviour follows content, not category:** anything containing speech can
+  be transcribed; a category only sets the default policy.
+
+### 18.6 Build order (proposed)
+
+1. Timestamp/timezone contract and its dependent fixes (§17.5).
+2. Project → Session → File restructure, migrating the existing rows.
+3. Notes fields (§18.2), Home page, categories-as-data (§17.1).
+4. Manual segment tagging with waveform and transcript-free UI.
+5. Transcription worker, then speaker identification.
+
+Before step 2, walk the remaining journeys (event first: show across nights,
+one or several recorders, multitrack) so the session boundary is right.
