@@ -281,72 +281,40 @@ No migration was needed (the user confirmed only test data exists), so the chang
 - Tests: 93 unit tests; 12 live checks (`tests/live/`, README) all green. The NAS-guard test now restores the job
   status it provokes, so it can't leave false errors on Home.
 
-## Work packages (proposed order; each ends with something checkable)
-Items marked **[app]** are backend work the Android app (PLAN §19) needs;
-they are scheduled here on purpose, early, and each also benefits the web UI.
-The app itself is still not to be built until explicitly asked.
+## Work packages: status as of 2026-09-21 (MVP reached; details in the "Built" sections above)
+**MVP = the core loop:** files arrive in the Drive Inbox (subfolders, sidecars, junk handled) -> review in bulk -> filed in
+the background onto the NAS in `{project}/{session}/` or `misc/{category}/{year}/{month}/` -> browse and search the
+library -> open a recording with its waveform and a compressed listening copy -> manage projects, sessions, tags and
+categories -> see how much Drive space can be freed. Everything is deployed, and covered by 93 unit tests and 12 live
+checks (`tests/live/`).
 
-1. **Time contract + location fixes** (small). `jobs/ingest.py`
-   `_extract_timestamp` (drops offsets), `jobs/dawarich.py` ~line 73
-   (`fromisoformat` fails on integer epochs), `app/api.py` `_resource_to_dict`
-   (serialise with Z) and `update_resource` (accept Z, store naive UTC; stale
-   tag id puts None in tags), `refresh_location` (appends TrackPoints; must
-   replace, and must not overwrite a manual Location), detail-screen round trip
-   (`resource_detail.html`: 10:00 BST reads back 09:00). *Check:* enter
-   09:11 BST -> stored 08:11Z -> reads back 09:11; a Dawarich refresh returns
-   the Stoke pin, twice, without duplicating points.
-2. **Filename patterns + recorder profiles.** Tables + a small matcher using
-   the fixtures file as test cases (unit tests, no DB). Produces suggested
-   date/precision/title-from-remainder/track label. **[app]** the same matcher
-   serves the app's "recorder profile per card". *Check:* every fixture line
-   parses to the expected result or to "unknown".
-3. **Project/Session/File restructure + migration** of the existing rows;
-   roles, `derived_from`, notes columns, placement/home fields. **[app]** give
-   projects and sessions a **client-generated UUID** so creates are idempotent
-   (retry-safe, works offline), and add create/list **project + session API**.
-   One migration, reversible. *Check:* the existing resource survives; the
-   library still loads; POSTing the same project twice with one client id
-   yields one project.
-4. **[app] API v1 + device authentication.** Put the API under a version
-   prefix (keep old paths working), add a `devices` table with per-device
-   tokens (create/revoke on the settings page), an auth decorator applied
-   per route (PLAN §16: addable per route, no IP trust), rate-limit-free
-   because VPN-only. Replaces the single shared `UPLOAD_API_KEY` for new
-   clients. *Check:* a revoked token is refused; the web UI still works.
-5. **Inbox hardening + [app] Upload API v2** (shared ingest path).
-   Inbox: recursion, sidecar rules, extension ignore list, batch review
-   actions. Upload: **chunked/resumable** upload, a **metadata block**
-   (project/session by client id, category, tags, title/notes, recorder
-   profile, source path, optional batch date override stored as approximate),
-   a **"have this checksum?"** query, **disk admission** on uploads
-   (`jobs/disk_budget.py`, answer 503 + Retry-After when full), Flask
-   `MAX_CONTENT_LENGTH` and nginx `client_max_body_size` / timeouts.
-   Depends on 3 and 4. *Check:* a fake tree with an `.RPP`, `.reapeaks`, a
-   nested folder and an `-EDIT` file ingests correctly; a 700 MB upload
-   interrupted and resumed arrives with the right sha256; a duplicate is
-   skipped by the checksum query; a full staging disk returns 503.
-6. **Waveform job + [app] proxy audio + reclaimable-space view.** One job
-   pattern, one cache keyed by sha256: the `.dat` peaks and a compressed
-   **playback proxy** (AAC/Opus ~96-128 kbps, format/quality to decide),
-   served with HTTP Range; the web player switches to the proxy too (it
-   currently streams the raw original). *Check:* peaks match a full-band
-   envelope (~0.98 correlation); proxy plays and seeks (206) through nginx;
-   run time and proxy size per hour measured.
-7. **[app] Export API for a device.** The export/convert workflow (PLAN §15)
-   is already API-first; make it callable with a device token, add progress
-   and resumable download, exclude sidecars/project files. **Decide the
-   parked private flag first.** *Check:* request an mp3 of a clip with a
-   token, poll, download, checksum matches a local ffmpeg run.
-8. **Categories as data, manage page (tags/projects/categories), Home page,
-   global map, place names.**
-9. **Placement + per-file copies + Drive remote decision** (only after the
-   Drive question below is answered).
-10. **Segments UI (Peaks.js), then the transcription worker.**
+| # | package | status |
+|---|---|---|
+| 1 | Time contract + location fixes | **done** |
+| 2 | Filename patterns + recorder profiles + date precision | **done** (no UI to edit profiles; API only) |
+| 3 | Project -> Session -> File | **done** |
+| 4 | [app] API v1 + per-device tokens | not started |
+| 5 | Inbox hardening, batch review, background filing | **done**; [app] upload API v2 not started |
+| 6 | Waveform + listening copy + reclaimable space | **done** ([app] device export API not started) |
+| 8 | Categories as data, Manage, Home | **done**; global map and place names **not started** (need decisions below) |
+| 9 | Placement + per-file copies + Drive remote | not started (Drive-copy design unresolved) |
+| 10 | Segments UI, then transcription worker | not started |
 
-Cheap wins any time (each under an hour): pause/disable the failing hourly
-`nas-to-drive-library` timer; put the disk-budget limits on the settings page;
-set Flask `MAX_CONTENT_LENGTH` and nginx `client_max_body_size`; update
-DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
+**Not in the MVP, in the order I would do them:**
+1. **Split-file joining and multitrack/outing grouping** (Insta360 parts are exactly 1800 s with a ~2 s gap; `filename_info`
+   already carries what the matcher needs). Suggest-only; a join is a non-destructive ffmpeg concat kept in staging budget.
+2. **Global map + place names.** Needs two decisions: OK to vendor Leaflet (BSD-2, a download), and the geocoder
+   (public Nominatim with a cache vs self-hosted).
+3. **Package 4 -> 5 (upload v2) -> 6 (device export)** = the backend the Android app needs. The app itself stays plan-only.
+4. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
+5. **Placement/Drive copies** (needs the Drive remote decision: `drive.file` OAuth vs full OAuth vs skip).
+6. Smaller: DAW project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
+
+**Before the archive import:** back up the NAS share yourself; then drop the archive into the Drive Inbox in batches (the
+disk-space queue paces it; nothing is imported until a file has been stable for 5 minutes; 10 files per 15-minute run).
+A sensible first run is 5-10 files including one subfolder, one `.reapeaks` and one `-EDIT` file, to see it end to end on
+the real Drive (the Inbox logic was tested with a fake rclone; only `lsjson -R` and `copy` of a single path were
+exercised against the real remote).
 
 ## Storage gaps found 2026-09-21 (decide/do before the packages noted)
 - **Backup: the user manages it externally to the app (decided 2026-09-21).**
