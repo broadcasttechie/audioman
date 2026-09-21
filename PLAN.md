@@ -1420,6 +1420,11 @@ noise and the `_processed` cleanup is the cost lever.
 
 ### 18.6 Build order (proposed)
 
+> Superseded by the numbered work packages in `NEXT.md`, which add the
+> Android-driven backend work (client ids, API v1 + device tokens, upload API
+> v2, playback proxy, device export API) early. The list below is kept for
+> the reasoning.
+
 1. Timestamp/timezone contract and its dependent fixes (§17.5).
 2. Project → Session → File restructure, migrating the existing rows.
 3. Notes fields (§18.2), Home page, categories-as-data (§17.1).
@@ -1431,8 +1436,11 @@ one or several recorders, multitrack) so the session boundary is right.
 
 ## 19. Android companion app — PLAN ONLY (do not build until explicitly asked)
 
-**Instruction (2026-09-21): this is planning only, for a while. No app code,
-no server work done *for* the app, until the user explicitly asks.**
+**Instruction (2026-09-21): the app itself is planning only, for a while — no
+app code until the user explicitly asks. Later the same day the user asked for
+the backend work the app needs to be scheduled "sooner rather than later" in
+the main web-app plan: it now is, in `NEXT.md` (work packages marked [app]),
+and each piece also benefits the web UI.**
 
 ### 19.1 Scope decided
 - **v1 = an uploader for files on attached storage** (an SD card in a USB

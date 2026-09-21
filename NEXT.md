@@ -80,6 +80,10 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
   Prereqs: NAS mounted, recursion into subfolders, sidecar rules, batch review.
 
 ## Work packages (proposed order; each ends with something checkable)
+Items marked **[app]** are backend work the Android app (PLAN §19) needs;
+they are scheduled here on purpose, early, and each also benefits the web UI.
+The app itself is still not to be built until explicitly asked.
+
 1. **Time contract + location fixes** (small). `jobs/ingest.py`
    `_extract_timestamp` (drops offsets), `jobs/dawarich.py` ~line 73
    (`fromisoformat` fails on integer epochs), `app/api.py` `_resource_to_dict`
@@ -87,51 +91,82 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
    tag id puts None in tags), `refresh_location` (appends TrackPoints; must
    replace, and must not overwrite a manual Location), detail-screen round trip
    (`resource_detail.html`: 10:00 BST reads back 09:00). *Check:* enter
-   09:11 BST → stored 08:11Z → reads back 09:11; a Dawarich refresh returns
+   09:11 BST -> stored 08:11Z -> reads back 09:11; a Dawarich refresh returns
    the Stoke pin, twice, without duplicating points.
 2. **Filename patterns + recorder profiles.** Tables + a small matcher using
    the fixtures file as test cases (unit tests, no DB). Produces suggested
-   date/precision/title-from-remainder/track label. *Check:* every fixture
-   line parses to the expected result or to "unknown".
+   date/precision/title-from-remainder/track label. **[app]** the same matcher
+   serves the app's "recorder profile per card". *Check:* every fixture line
+   parses to the expected result or to "unknown".
 3. **Project/Session/File restructure + migration** of the existing rows;
-   roles, `derived_from`, notes columns, placement/home fields. One migration,
-   reversible. *Check:* the existing resource survives; library still loads.
-4. **Inbox: recursion, sidecar rules, extension ignore list, batch review
-   actions.** Depends on 3. *Check:* a fake tree with an `.RPP`, `.reapeaks`,
-   a nested folder and an `-EDIT` file ingests correctly.
-5. **Waveform job + reclaimable-space view.** Needs 3 for file identity.
-   *Check:* peaks match a full-band envelope (~0.98 correlation), 206 Range
-   through nginx, run time measured.
-6. **Categories as data, manage page (tags/projects/categories), Home page,
+   roles, `derived_from`, notes columns, placement/home fields. **[app]** give
+   projects and sessions a **client-generated UUID** so creates are idempotent
+   (retry-safe, works offline), and add create/list **project + session API**.
+   One migration, reversible. *Check:* the existing resource survives; the
+   library still loads; POSTing the same project twice with one client id
+   yields one project.
+4. **[app] API v1 + device authentication.** Put the API under a version
+   prefix (keep old paths working), add a `devices` table with per-device
+   tokens (create/revoke on the settings page), an auth decorator applied
+   per route (PLAN §16: addable per route, no IP trust), rate-limit-free
+   because VPN-only. Replaces the single shared `UPLOAD_API_KEY` for new
+   clients. *Check:* a revoked token is refused; the web UI still works.
+5. **Inbox hardening + [app] Upload API v2** (shared ingest path).
+   Inbox: recursion, sidecar rules, extension ignore list, batch review
+   actions. Upload: **chunked/resumable** upload, a **metadata block**
+   (project/session by client id, category, tags, title/notes, recorder
+   profile, source path, optional batch date override stored as approximate),
+   a **"have this checksum?"** query, **disk admission** on uploads
+   (`jobs/disk_budget.py`, answer 503 + Retry-After when full), Flask
+   `MAX_CONTENT_LENGTH` and nginx `client_max_body_size` / timeouts.
+   Depends on 3 and 4. *Check:* a fake tree with an `.RPP`, `.reapeaks`, a
+   nested folder and an `-EDIT` file ingests correctly; a 700 MB upload
+   interrupted and resumed arrives with the right sha256; a duplicate is
+   skipped by the checksum query; a full staging disk returns 503.
+6. **Waveform job + [app] proxy audio + reclaimable-space view.** One job
+   pattern, one cache keyed by sha256: the `.dat` peaks and a compressed
+   **playback proxy** (AAC/Opus ~96-128 kbps, format/quality to decide),
+   served with HTTP Range; the web player switches to the proxy too (it
+   currently streams the raw original). *Check:* peaks match a full-band
+   envelope (~0.98 correlation); proxy plays and seeks (206) through nginx;
+   run time and proxy size per hour measured.
+7. **[app] Export API for a device.** The export/convert workflow (PLAN §15)
+   is already API-first; make it callable with a device token, add progress
+   and resumable download, exclude sidecars/project files. **Decide the
+   parked private flag first.** *Check:* request an mp3 of a clip with a
+   token, poll, download, checksum matches a local ffmpeg run.
+8. **Categories as data, manage page (tags/projects/categories), Home page,
    global map, place names.**
-7. **Placement + per-file copies + Drive remote decision** (only after the
+9. **Placement + per-file copies + Drive remote decision** (only after the
    Drive question below is answered).
-8. **Segments UI (Peaks.js), then the transcription worker.**
+10. **Segments UI (Peaks.js), then the transcription worker.**
 
 Cheap wins any time (each under an hour): pause/disable the failing hourly
 `nas-to-drive-library` timer; put the disk-budget limits on the settings page;
-update DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
+set Flask `MAX_CONTENT_LENGTH` and nginx `client_max_body_size`; update
+DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
 
 ## Questions the user can answer offline (each unblocks a package)
 1. Correct the wrong date on the existing resource (15th → 17th)? (WP1)
-2. Confirm one `voice` category replacing voice-personal/voice-project. (WP6)
-3. Place-name source: public Nominatim with caching, or self-hosted. (WP6)
+2. Confirm one `voice` category replacing voice-personal/voice-project. (WP8)
+3. Place-name source: public Nominatim with caching, or self-hosted. (WP8)
 4. Drive copies: (a) second OAuth remote with `drive.file` scope [recommended],
-   (b) full owner OAuth, or (c) skip Drive copies for now. (WP7)
+   (b) full owner OAuth, or (c) skip Drive copies for now. (WP9)
 5. Pause the failing hourly Drive sync timer now? (cheap win)
 6. Where do multitrack files come from / a sample of names when available. (WP2)
 7. OK for filename/mtime dates as *suggestions* confirmed at intake — assumed
    yes from "filenames often have times"; say if not. (WP2)
 8. Synology NFS export + mount (`nfs: audio-library`, `mp0`), UniFi reservation
-   and DNS, PBS/replication. Needed before the archive import. (WP4 gate)
+   and DNS, PBS/replication. Needed before the archive import. (WP5 gate)
 
 ## Android app — PLAN ONLY
 v1 is an **uploader for files on attached storage** (USB card reader /
 recorder) that attaches key metadata (project/session, tags, date override) and
 must be quick, **plus browse, playback (via a server-made compressed proxy) and
 download with conversion**; recording is a later option. **Do not build the app
-or server work for it until the user explicitly asks.** Plan and server gap
-list: PLAN.md §19.
+until the user explicitly asks.** The backend work it needs is scheduled in the
+work packages above (marked [app], updated 2026-09-21 at the user's request:
+"sooner rather than later"). Plan and server gap list: PLAN.md §19.
 
 ## Not decided / parked
 Private flag; encryption at rest; soundcheck-vs-show sessions; tag "kind";
