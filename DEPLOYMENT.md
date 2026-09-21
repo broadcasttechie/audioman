@@ -163,6 +163,10 @@ Not built; flagging so it doesn't get lost.
   squashed admin user, the audio endpoint returns 206 from the NAS file, the
   library lists the file with its unchanged path, and `verify-integrity`
   reports no mismatches.
+- **Mount guard and safe filing are live** (`jobs/nas.py`): mounting the NAS had
+  broken filing (cross-device rename), now fixed as copy -> verify -> delete; see
+  NEXT.md for the full list of what refuses to run when the NAS is not mounted.
+  Check it with `GET /api/nas/status`.
 - Mount options follow the existing Plex/backups storages (`soft`). A soft mount
   can return an I/O error to a write rather than hang; filing should copy,
   verify the checksum, then delete the staging file (not yet confirmed in the

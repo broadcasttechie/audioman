@@ -8,14 +8,24 @@ Dawarich/Immich backfill lives in jobs/enrich.py, not here — those are
 a continuous self-healing queue (see that module's docstring), not an
 occasional maintenance sweep.
 """
-import hashlib
 import os
 from datetime import datetime
 
 from config import Config
 from app.extensions import db
 from app.models import Resource, FileEvent, JobRun
+from .nas import nas_status, sha256_file
 from .path_template import render_path
+
+
+def _nas_blocked(job_name):
+    """A dropped NAS mount must stop these jobs, not make them report every file
+    missing (or refile onto the local disk). Returns a result dict when blocked."""
+    ok, reason = nas_status()
+    if ok:
+        return None
+    _record_run(job_name, "error", f"NAS unavailable, nothing done: {reason}")
+    return {"status": "error", "detail": f"NAS unavailable: {reason}"}
 
 
 def _record_run(job_name, status, log_tail=""):
@@ -33,12 +43,19 @@ def refile_all():
     Moves any resource whose stored nas_path no longer matches, and
     logs each move — then triggers a Drive resync.
     """
-    moved = []
+    blocked = _nas_blocked("refile-all")
+    if blocked:
+        return blocked
+    moved, skipped = [], []
     for resource in Resource.query.filter_by(status="filed").all():
         expected = render_path(resource, project=resource.project)
         expected_full = os.path.join(Config.NAS_LIBRARY_ROOT, expected)
 
         if resource.nas_path != expected_full:
+            if os.path.exists(expected_full):
+                # os.rename would silently overwrite another file: never do that.
+                skipped.append({"id": resource.id, "issue": f"destination exists: {expected_full}"})
+                continue
             os.makedirs(os.path.dirname(expected_full), exist_ok=True)
             if resource.nas_path and os.path.exists(resource.nas_path):
                 os.rename(resource.nas_path, expected_full)
@@ -53,19 +70,27 @@ def refile_all():
 
     # TODO: trigger nas_to_drive_library() here once refiling is done,
     # rather than waiting for its own schedule.
-    _record_run("refile-all", "success", f"moved: {moved}")
-    return {"status": "success", "moved": moved}
+    _record_run("refile-all", "partial" if skipped else "success", f"moved: {moved}, skipped: {skipped}")
+    return {"status": "partial" if skipped else "success", "moved": moved, "skipped": skipped}
 
 
 def verify_integrity():
     """Re-checksum NAS files, flag drift against stored checksums."""
+    blocked = _nas_blocked("verify-integrity")
+    if blocked:
+        return blocked
     mismatches = []
     for resource in Resource.query.filter_by(status="filed").all():
         if not resource.nas_path or not os.path.exists(resource.nas_path):
             mismatches.append({"id": resource.id, "issue": "missing"})
             continue
 
-        actual = hashlib.sha256(open(resource.nas_path, "rb").read()).hexdigest()
+        # Chunked: recordings run to hundreds of MB and the container has 2 GB.
+        try:
+            actual = sha256_file(resource.nas_path)
+        except OSError as e:
+            mismatches.append({"id": resource.id, "issue": f"unreadable: {e}"})
+            continue
         if actual != resource.checksum:
             mismatches.append({"id": resource.id, "issue": "checksum-mismatch"})
 
@@ -79,10 +104,15 @@ def find_orphans():
     `resources` row, or vice versa. Depends on library_verify's rclone
     check output for the Drive side — left as a TODO wiring point.
     """
+    blocked = _nas_blocked("find-orphans")
+    if blocked:
+        return blocked
     known_paths = {r.nas_path for r in Resource.query.filter_by(status="filed").all()}
     on_disk = set()
     for root, _, files in os.walk(Config.NAS_LIBRARY_ROOT):
         for f in files:
+            if f == Config.NAS_MARKER_FILE:
+                continue  # the mount-guard marker is not a recording
             on_disk.add(os.path.join(root, f))
 
     orphans_on_disk = list(on_disk - known_paths)

@@ -17,6 +17,11 @@ class Config:
 
     # --- Storage paths ---
     NAS_LIBRARY_ROOT = os.environ.get("NAS_LIBRARY_ROOT", "/mnt/nas/audio")
+    # Guard against an unmounted NAS (jobs/nas.py): the library root must be a real
+    # mount point AND contain this marker file, which exists only on the NAS share.
+    # Set NAS_REQUIRE_MOUNT=0 only for local development without a NAS.
+    NAS_MARKER_FILE = os.environ.get("NAS_MARKER_FILE", ".audio-manager-nas")
+    NAS_REQUIRE_MOUNT = os.environ.get("NAS_REQUIRE_MOUNT", "1") not in ("0", "false", "False", "")
     STAGING_DIR = os.environ.get("STAGING_DIR", "/var/lib/audio-manager/staging")
 
     # --- rclone remotes (names as configured in rclone.conf) ---

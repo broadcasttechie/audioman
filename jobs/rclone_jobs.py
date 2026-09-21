@@ -16,6 +16,7 @@ from app.extensions import db
 from app.models import PendingUpload, FileEvent, JobRun
 from .ingest import ingest_staged_file, _fail
 from . import disk_budget
+from .nas import nas_status
 
 
 def _cmd_error_detail(e):
@@ -207,6 +208,12 @@ def nas_to_drive_library():
     corresponding file in Drive `/Library` too.
     """
     remote_path = f"{Config.RCLONE_DRIVE_REMOTE}:{Config.DRIVE_LIBRARY_PATH}"
+    nas_ok, nas_reason = nas_status()
+    if not nas_ok:
+        # Critical: `rclone sync` from an empty unmounted directory would DELETE the Drive copy.
+        detail = f"NAS unavailable, sync skipped: {nas_reason}"
+        _record_run("nas-to-drive-library", "error", detail)
+        return {"status": "error", "detail": detail}
     try:
         subprocess.run(
             ["rclone", "sync", Config.NAS_LIBRARY_ROOT, remote_path],
@@ -225,6 +232,11 @@ def nas_to_drive_library():
 def library_verify():
     """Drift check only, no transfer — feeds jobs.maintenance.find_orphans."""
     remote_path = f"{Config.RCLONE_DRIVE_REMOTE}:{Config.DRIVE_LIBRARY_PATH}"
+    nas_ok, nas_reason = nas_status()
+    if not nas_ok:
+        detail = f"NAS unavailable, check skipped: {nas_reason}"
+        _record_run("library-verify", "error", detail)
+        return {"status": "error", "detail": detail}
     try:
         result = subprocess.run(
             ["rclone", "check", Config.NAS_LIBRARY_ROOT, remote_path],

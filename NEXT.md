@@ -177,9 +177,29 @@ DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
   storage `audio-library`; the library is the `library/` subfolder, bind-mounted
   at `/mnt/nas/audio` (`replicate=0,backup=0` — LXC 132 is replicated to pmx1,
   which otherwise refuses the mount). Existing file migrated and verified.
-  Details in DEPLOYMENT.md. Still to do: the **mount guard** (marker file
-  `/mnt/nas/audio/.audio-manager-nas` exists for it). Backup is the user's,
+  Details in DEPLOYMENT.md. **Mount guard BUILT** (`jobs/nas.py`, see below). Backup is the user's,
   outside the app.
+
+## Built 2026-09-21: NAS mount guard + safe filing (`jobs/nas.py`)
+Mounting the NAS **broke filing**: `os.rename` from staging to the NAS fails with
+EXDEV (verified). Fixed together with the guard.
+- **Guard:** the library root must be a real mount point AND contain the marker
+  `.audio-manager-nas`; otherwise filing (PATCH -> 503, nothing changed), the audio
+  endpoint (503, not a misleading 404), `refile-all`, `verify-integrity`,
+  `find-orphans`, `nas-to-drive-library` (an rclone sync from an empty unmounted
+  dir would delete the Drive copy), `library-verify` and exports refuse to run.
+  `GET /api/nas/status` reports it. `NAS_REQUIRE_MOUNT=0` disables it for local dev.
+- **Safe filing:** copy -> fsync -> checksum vs stored -> read-back from the NAS ->
+  atomic rename -> only then delete staging. Any failure leaves the source intact and
+  no partial file. **Never overwrites** an existing destination (409); `refile-all`
+  now skips (and reports) a destination that exists instead of silently overwriting.
+- **Also fixed:** `verify-integrity` read each whole file into memory (a 690 MB
+  recording on a 2 GB container) and never closed it; it is now chunked.
+- Verified: 20 unit tests (`tests/`, run on the container) and a 21-check end-to-end
+  run against the real mount (guard down -> 503 and unchanged; real filing; checksum
+  on the NAS; Range playback from the NAS; name collision -> 409; jobs refuse when
+  down). Not covered: an actual NFS outage/unmount (simulated by hiding the marker).
+- Left as is: `retry_failed`'s "move" branch (nothing ever sets that failure stage).
 
 ## Questions the user can answer offline (each unblocks a package)
 1. Correct the wrong date on the existing resource (15th → 17th)? (WP1)

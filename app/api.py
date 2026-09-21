@@ -95,6 +95,14 @@ def update_resource(resource_id):
         return jsonify({"error": f"category must be one of {Config.CATEGORIES}"}), 400
 
     filing_now = data.get("status") == "filed" and r.status != "filed"
+    if filing_now:
+        # Refuse before changing anything, so a dropped NAS mount can't leave a
+        # half-applied edit behind.
+        from jobs.nas import nas_status
+        nas_ok, nas_reason = nas_status()
+        if not nas_ok:
+            return jsonify({"error": "The NAS is not available, so nothing was changed.",
+                            "detail": nas_reason}), 503
 
     for field in ("category", "project_id", "captured_at", "captured_at_source"):
         if field in data:
@@ -113,7 +121,21 @@ def update_resource(resource_id):
     if filing_now:
         if not r.category:
             return jsonify({"error": "category is required before filing"}), 400
-        _file_resource(r)
+        from jobs.nas import NasUnavailable
+        try:
+            _file_resource(r)
+        except NasUnavailable as e:
+            db.session.rollback()
+            return jsonify({"error": "The NAS is not available, so nothing was changed.",
+                            "detail": str(e)}), 503
+        except FileExistsError as e:
+            db.session.rollback()
+            return jsonify({"error": "A file with that name already exists in the destination folder; "
+                                     "nothing was changed.", "detail": str(e)}), 409
+        except OSError as e:
+            db.session.rollback()
+            return jsonify({"error": "Could not copy the file to the NAS; the original is untouched.",
+                            "detail": str(e)}), 500
     elif "status" in data:
         r.status = data["status"]
 
@@ -128,6 +150,7 @@ def _file_resource(resource):
     status/paths accordingly. Import is local to avoid a circular
     import between app.api and jobs.path_template.
     """
+    from jobs.nas import file_to_nas
     from jobs.path_template import render_path
 
     if not resource.staging_path or not os.path.exists(resource.staging_path):
@@ -138,8 +161,9 @@ def _file_resource(resource):
     relative_path = render_path(resource, project=resource.project)
     destination = os.path.join(Config.NAS_LIBRARY_ROOT, relative_path)
 
-    os.makedirs(os.path.dirname(destination), exist_ok=True)
-    os.rename(resource.staging_path, destination)
+    # Staging and the NAS are different filesystems, so this is copy ->
+    # verify -> delete, not a rename (see jobs/nas.py).
+    file_to_nas(resource.staging_path, destination, expected_sha256=resource.checksum)
 
     resource.nas_path = destination
     resource.staging_path = None
@@ -218,8 +242,23 @@ def stream_audio(resource_id):
     resource = Resource.query.get_or_404(resource_id)
     path = resource.nas_path or resource.staging_path
     if not path or not os.path.exists(path):
+        if path:
+            # A missing file under the NAS root is far more likely an unmounted
+            # NAS than a deleted recording: say so instead of a misleading 404.
+            from jobs.nas import is_nas_path, nas_status
+            nas_ok, nas_reason = nas_status()
+            if is_nas_path(path) and not nas_ok:
+                abort(503, description=f"NAS unavailable: {nas_reason}")
         abort(404, description="audio file not found on disk")
     return send_file(path, conditional=True)
+
+
+@bp.get("/nas/status")
+def nas_health():
+    """Whether the library mount is live (see jobs/nas.py)."""
+    from jobs.nas import nas_status
+    ok, reason = nas_status()
+    return jsonify({"ok": ok, "reason": reason, "root": Config.NAS_LIBRARY_ROOT}), (200 if ok else 503)
 
 
 # --- Sub-clips ---

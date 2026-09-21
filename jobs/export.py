@@ -28,6 +28,7 @@ from datetime import datetime
 from config import Config
 from app.extensions import db
 from app.models import Export, FileEvent
+from .nas import is_nas_path, require_nas
 
 FORMAT_CODEC_ARGS = {
     "wav": ["-c:a", "pcm_s16le"],
@@ -57,6 +58,8 @@ def _metadata_args(resource):
 def _run_one_export(export):
     resource = export.resource
     source_path = resource.nas_path or resource.staging_path
+    if source_path and is_nas_path(source_path):
+        require_nas()  # an unmounted NAS is "try later", not "source audio missing"
     if not source_path or not os.path.exists(source_path):
         raise FileNotFoundError(f"source audio missing for resource {resource.id}")
 
