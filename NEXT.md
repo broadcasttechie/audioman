@@ -31,8 +31,8 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
   (naive-UTC in DB, serialise with Z, recorder IANA tz + offset seconds).
 - **Verified facts:** filename time is local time: `audio_260917_091124…` =
   09:11:24 BST = 08:11:24 UTC, 22 s from a Dawarich point 62 m from Stoke
-  station. The stored `captured_at` on the one real resource (2026-09-15
-  08:11) is a mis-entered date; unchanged pending the user.
+  station. The one real resource's date has since been corrected (2026-09-17
+  08:11Z).
 - **Real filename patterns:** see `tests/fixtures/sample_filenames.txt`.
   Insta360 mic `audio_YYMMDD_HHMMSS_{24|32}bit_orig[_stereo].wav` = the
   30-minute splitter (parts exactly 1800 s; next part's name is ~2 s after
@@ -98,9 +98,10 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
   `jobs/enrich.apply_location_result`.
 - **API:** stale/malformed tag ids now 400 (used to crash on commit); all API datetimes carry Z.
 - Verified: 35 unit tests + a 30-check live run (`tests/`, run on the container).
-- **Not done from WP1:** the "Refresh location" button on the detail screen (the API works),
-  and correcting the one real resource's date (the user's call). The existing resource's stored
-  time (08:11) is correct under the new contract; only its date (15th, not 17th) is wrong.
+- **Real-file test (requested by the user):** the one real resource (captured 2026-09-17
+  08:11Z = 09:11 BST, date since corrected by the user) was refreshed against Dawarich and now
+  has location 53.00816, -2.18121 (`dawarich-auto`, Stoke station) and a 13-point track.
+- **Not done from WP1:** the "Refresh location" button on the detail screen (the API works).
 
 ## Work packages (proposed order; each ends with something checkable)
 Items marked **[app]** are backend work the Android app (PLAN §19) needs;
@@ -225,7 +226,7 @@ EXDEV (verified). Fixed together with the guard.
 - Left as is: `retry_failed`'s "move" branch (nothing ever sets that failure stage).
 
 ## Questions the user can answer offline (each unblocks a package)
-1. Correct the wrong date on the existing resource (15th → 17th)? (WP1)
+1. ~~Correct the wrong date on the existing resource~~ done by the user; location refreshed. (WP1)
 2. Confirm one `voice` category replacing voice-personal/voice-project. (WP8)
 3. Place-name source: public Nominatim with caching, or self-hosted. (WP8)
 4. Drive copies: (a) second OAuth remote with `drive.file` scope [recommended],
