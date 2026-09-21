@@ -1607,3 +1607,44 @@ keep their old names (they mean "location/photo lookup done") to avoid a migrati
 Write the function to the contract in a module under `jobs/`, add one line to `REGISTRY`, add a unit test with recorded
 responses and a live check, set the config key. Nothing else changes.
 
+## 21. Waveform player and editor (and the processing roadmap)
+
+**Stated (2026-09-21):** the waveform should be part of the player at the bottom; there should be a full-screen waveform
+player/editor for creating clips and reviewing; and longer term, some basic processing such as 32-bit float conversion.
+
+### 21.1 Built
+- **One shared component** (`app/static/waveform.js`: `WaveView`): parsing of audiowaveform's `.dat`, drawing, a time ruler,
+  clip regions, a selection with draggable edges, scrub mode, an overview strip, pointer and pinch handling. Used by all three:
+- **The bottom player** (recording page): a custom bar (no native controls): play/pause, the current time, a **waveform you
+  press or drag to scrub**, the length, and a button that opens the editor. It plays the compressed listening copy. Until the
+  waveform is generated it is a plain progress line that already scrubs.
+- **The recording page's waveform:** zoom, pan, tap to seek, a link to the editor.
+- **The editor** (`/edit/<id>`): a large waveform with a ruler and a whole-file **overview strip** (drag it to move the
+  view); **Select** mode (drag to choose a range; drag either edge to adjust) or **Move** mode (drag to pan); zoom (buttons,
+  pinch, wheel, keys); start/end boxes you can type into (`1:02.5`); "set start/end here"; play selection, **loop**, speed; **clips
+  shown as labelled regions**, tap one to select it; save as clip; per clip: play, select, rename, "use current selection", delete,
+  **export** (original, WAV, FLAC, MP3, through the existing export job, then a download link). Keyboard: Space, arrows
+  (Shift 10 s, Alt 0.1 s), I / O, Enter, C, L, S, + - 0, Esc.
+- Clip times are rounded **down** to the millisecond and clamped to the recording's real duration (the waveform is a fraction
+  longer than the audio, and the server refuses a clip past the end).
+
+### 21.2 Not built yet: basic processing (design, so it fits what is there)
+- **Non-destructive, always:** the original is never touched (PLAN 18.5). A processed result is a **new file**, role
+  `edit`/`export`, `derived_from` the original, filed in the same session (through the normal staging/disk-budget path), with
+  the chain of steps and parameters recorded on it so it can be reproduced.
+- **A chain of steps run by ffmpeg in the background** (extending the export job, which already converts formats): trim to a
+  clip, gain and **normalise** (peak or loudness), fades, high-/low-pass, noise reduction, mono/stereo mix, sample-rate conversion,
+  and **bit depth / format conversion including 32-bit float** (`pcm_f32le`), 24-bit, 16-bit with dither, FLAC, MP3, Opus.
+  32-bit float first, since it is one codec flag (`FORMAT_CODEC_ARGS` in `jobs/export.py`) and the user's recorders produce it.
+- **Audition before saving:** render a few seconds of the chain to a temporary preview and play it in the editor.
+- **BWF/iXML markers:** clips and (later) tagged segments written into exported WAVs so they appear in a DAW (PLAN 18.4).
+- The editor grows a "Process and export..." panel; the same view later becomes the **segment tagger** and transcript pane
+  (PLAN 18.4/18.5) with no new drawing code.
+
+### 21.3 Known gaps
+None of this has been run in a real browser (the browser tools ask for approval, which the user asked to avoid); it is covered by
+50 Node tests that drive the real page scripts under a fake DOM (`tests/js/`) plus live API checks. The bottom bar exists only on the
+recording page (it does not persist across pages). No undo for clip edits. Clips have no tags or notes in the editor yet (the
+API has `notes`). Select mode's one-finger drag competes with page scrolling on a phone, so the editor keeps a Move mode and the
+overview strip for navigation.
+

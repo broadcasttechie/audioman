@@ -42,7 +42,12 @@
     height: var(--player-size); background: Canvas; border-top: 1px solid #8884;
     display: flex; align-items: center; padding: 0 1rem; z-index: 9;
   }
-  .player-bar audio { width: 100%; }
+  .player-bar { gap: 0.5rem; }
+  .player-bar audio { display: none; }
+  .pb-play { flex: none; width: 2.5rem; height: 2.5rem; border-radius: 50%; padding: 0; font-size: 1rem; line-height: 1; }
+  .pb-time { flex: none; font-size: 0.75rem; font-variant-numeric: tabular-nums; min-width: 2.4rem; text-align: center; opacity: 0.85; }
+  .pb-wave { flex: 1; min-width: 0; height: 48px; cursor: pointer; display: block; color: CanvasText; }
+  .pb-expand { flex: none; font-size: 1.3rem; text-decoration: none; padding: 0 0.15rem; }
 
   .wf-wrap { border: 1px solid #8884; border-radius: 8px; padding: 0.4rem 0.5rem 0.5rem; }
   /* touch-action pan-y: a vertical swipe still scrolls the page, horizontal drags pan the waveform */
@@ -64,6 +69,7 @@
 <div id="detail" class="status">Loading...</div>
 {% endblock %}
 {% block scripts %}
+<script src="/static/waveform.js"></script>
 <script src="/static/map.js"></script>
 <script>
 const resourceId = {{ resource_id | tojson }};
@@ -770,60 +776,19 @@ async function pollExport(exportId, btn) {
 }
 
 // ---------------- waveform ----------------
-// One dense tier of peaks (about 100 per second) in audiowaveform's native .dat, drawn on a canvas. The .dat
-// header carries the sample rate and samples-per-pixel the data was built with, so time = index * spp / rate
-// exactly, with no recomputation and so no playhead drift. Zoom just changes which slice is drawn.
-let wfCache = null;                 // parsed data survives the re-renders of #detail
-let wfListeners = [];               // [target, event, handler] so a re-render can detach the old ones
-
-async function fetchWaveform(id) {
-  if (wfCache && wfCache.id === id) return wfCache;
-  const r = await fetch(`/api/resources/${id}/waveform`);
-  if (r.status === 202) return null;                        // still being generated
-  if (!r.ok) {
-    const d = await r.json().catch(() => ({}));
-    throw new Error(d.error || r.statusText);
-  }
-  const buf = await r.arrayBuffer();
-  const dv = new DataView(buf);
-  const version = dv.getInt32(0, true), flags = dv.getUint32(4, true);
-  const rate = dv.getInt32(8, true), spp = dv.getInt32(12, true), length = dv.getUint32(16, true);
-  const channels = version === 2 ? dv.getInt32(20, true) : 1;
-  const headerSize = version === 2 ? 24 : 20;
-  if ((version !== 1 && version !== 2) || !(flags & 1) || channels !== 1 || rate <= 0 || spp <= 0
-      || buf.byteLength !== headerSize + length * 2) {
-    throw new Error('the waveform file is not in the expected format');
-  }
-  const raw = new Int8Array(buf, headerSize, length * 2);
-  const mins = new Int8Array(length), maxs = new Int8Array(length);
-  const mags = [];
-  for (let i = 0; i < length; i++) {
-    mins[i] = raw[2 * i]; maxs[i] = raw[2 * i + 1];
-    if (i % 10 === 0) mags.push(Math.max(Math.abs(mins[i]), Math.abs(maxs[i])));
-  }
-  mags.sort((a, b) => a - b);
-  const p95 = mags.length ? mags[Math.floor(mags.length * 0.95)] : 0;
-  // Show quiet recordings at a readable height: scale so the 95th percentile reaches ~80%, within 1x-16x.
-  const gain = p95 > 0 ? Math.min(16, Math.max(1, (0.8 * 127) / p95)) : 1;
-  wfCache = { id, rate, spp, length, mins, maxs, gain, pps: rate / spp, duration: length * spp / rate };
-  return wfCache;
-}
+// Drawing, zooming, selecting and parsing all live in the shared component (app/static/waveform.js), which the bottom
+// player and the full-screen editor use too. This page only wires it to the audio element.
+let waveListeners = [];             // [target, event, handler] so a re-render can detach the old ones
 
 function detachWaveform() {
-  wfListeners.forEach(([t, ev, fn]) => t.removeEventListener(ev, fn));
-  wfListeners = [];
-}
-
-function fmtTime(s) {
-  s = Math.max(0, s);
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
-  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+  waveListeners.forEach(([t, ev, fn]) => t.removeEventListener(ev, fn));
+  waveListeners = [];
 }
 
 function buildWaveformSection(resource) {
   detachWaveform();
   const section = el('section');
-  section.append(el('h2', {}, ['Waveform']));
+  section.append(el('h2', {}, ['Waveform ', el('a', { href: `/edit/${resource.id}`, class: 'hint', style: 'font-weight:normal;font-size:0.8rem' }, ['Open the editor →'])]));
   const wrap = el('div', { class: 'wf-wrap' });
   const note = el('p', { class: 'hint' }, ['Generating the waveform… this takes a few seconds.']);
   section.append(wrap);
@@ -846,11 +811,12 @@ function buildWaveformSection(resource) {
     // attached, which is why the first call below is deferred: at build time it isn't on the page yet).
     if (!document.body.contains(wrap)) return;
     try {
-      const wf = await fetchWaveform(resource.id);
+      const wf = await AudioWave.loadWaveform(resource.id);
       if (!wf) {
         if (++tries < 200) setTimeout(load, 3000); else note.textContent = 'The waveform is taking too long; check the job log.';
         return;
       }
+      if (!document.body.contains(wrap)) return;
       wrap.replaceChildren();
       mountWaveform(wrap, wf);
     } catch (e) { note.textContent = 'The waveform could not be loaded: ' + e.message; }
@@ -868,120 +834,36 @@ function mountWaveform(wrap, wf) {
   wrap.append(canvas, el('div', { class: 'wf-bar' }, [zoomOut, zoomIn, fit, label]));
 
   const audio = () => document.getElementById('player');
-  const MIN_SPAN = 0.5;
-  let start = 0, span = wf.duration;
-
-  const clampView = () => {
-    span = Math.min(wf.duration, Math.max(Math.min(MIN_SPAN, wf.duration), span));
-    start = Math.min(Math.max(0, start), Math.max(0, wf.duration - span));
-  };
-  const timeAt = (clientX) => {
-    const rect = canvas.getBoundingClientRect();
-    return start + span * Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-  };
-
-  function draw() {
-    if (!document.body.contains(canvas)) return;
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    if (!w) return;
-    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
-    }
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-    const mid = h / 2, scale = (mid / 128) * wf.gain;
-    ctx.fillStyle = getComputedStyle(canvas).color;          // follows light/dark mode
-    ctx.globalAlpha = 0.28;
-    ctx.fillRect(0, mid, w, 1);
-    ctx.globalAlpha = 0.85;
-    for (let x = 0; x < w; x++) {
-      const a = Math.max(0, Math.floor((start + span * x / w) * wf.pps));
-      const b = Math.max(a + 1, Math.floor((start + span * (x + 1) / w) * wf.pps));
-      let lo = 127, hi = -128;
-      for (let i = a; i < b && i < wf.length; i++) {
-        if (wf.mins[i] < lo) lo = wf.mins[i];
-        if (wf.maxs[i] > hi) hi = wf.maxs[i];
-      }
-      if (hi < lo) continue;
-      const top = Math.max(0, mid - hi * scale), bottom = Math.min(h, mid - lo * scale);
-      ctx.fillRect(x, top, 1, Math.max(1, bottom - top));
-    }
-    ctx.globalAlpha = 1;
-    const a = audio();
-    const now = a ? a.currentTime : 0;
-    const px = ((now - start) / span) * w;
-    if (px >= 0 && px <= w) { ctx.fillStyle = '#e0533d'; ctx.fillRect(Math.round(px) - 1, 0, 2, h); }
-    label.textContent = `${fmtTime(now)} / ${fmtTime(wf.duration)}` + (span < wf.duration ? `  · ${fmtTime(start)}–${fmtTime(start + span)}` : '');
-  }
-
-  const zoomBy = (factor, anchorTime) => {
-    const anchor = anchorTime === undefined ? start + span / 2 : anchorTime;
-    const frac = (anchor - start) / span;
-    span /= factor; clampView();
-    start = anchor - frac * span; clampView();
-    draw();
-  };
-  zoomIn.addEventListener('click', () => zoomBy(2));
-  zoomOut.addEventListener('click', () => zoomBy(0.5));
-  fit.addEventListener('click', () => { start = 0; span = wf.duration; draw(); });
-
-  // Pointer handling: a tap seeks, a drag pans, two fingers pinch-zoom, ctrl+wheel (trackpad pinch) zooms.
-  const pointers = new Map();
-  let dragFrom = null, moved = false, pinchDist = 0;
-  canvas.addEventListener('pointerdown', (ev) => {
-    canvas.setPointerCapture(ev.pointerId);
-    pointers.set(ev.pointerId, ev.clientX);
-    if (pointers.size === 1) { dragFrom = { x: ev.clientX, start }; moved = false; }
-    if (pointers.size === 2) { const [p, q] = [...pointers.values()]; pinchDist = Math.abs(p - q); dragFrom = null; moved = true; }
+  const view = new AudioWave.WaveView(canvas, {
+    wf, zoomable: true,
+    getTime: () => (audio() ? audio().currentTime : 0),
+    onSeek: (t) => { const a = audio(); if (a) a.currentTime = t; },          // tapping the waveform only seeks
+    onDraw: (v) => {
+      const now = audio() ? audio().currentTime : 0;
+      label.textContent = `${AudioWave.fmtClock(now)} / ${AudioWave.fmtClock(v.duration)}` +
+        (v.span < v.duration - 0.01 ? `  · ${AudioWave.fmtClock(v.start)}–${AudioWave.fmtClock(v.start + v.span)}` : '');
+    },
   });
-  canvas.addEventListener('pointermove', (ev) => {
-    if (!pointers.has(ev.pointerId)) return;
-    pointers.set(ev.pointerId, ev.clientX);
-    if (pointers.size === 2) {
-      const [p, q] = [...pointers.values()];
-      const d = Math.abs(p - q);
-      if (pinchDist > 0 && d > 0) zoomBy(d / pinchDist, timeAt((p + q) / 2));
-      pinchDist = d;
-    } else if (dragFrom) {
-      const dx = ev.clientX - dragFrom.x;
-      if (Math.abs(dx) > 4) moved = true;
-      if (moved) { start = dragFrom.start - (dx / canvas.clientWidth) * span; clampView(); draw(); }
-    }
-  });
-  const end = (ev) => {
-    if (pointers.size === 1 && dragFrom && !moved) { const a = audio(); if (a) a.currentTime = timeAt(ev.clientX); draw(); }
-    pointers.delete(ev.pointerId);
-    if (pointers.size < 2) pinchDist = 0;
-    if (pointers.size === 0) dragFrom = null;
-  };
-  canvas.addEventListener('pointerup', end);
-  canvas.addEventListener('pointercancel', (ev) => { pointers.delete(ev.pointerId); dragFrom = null; });
-  canvas.addEventListener('wheel', (ev) => {
-    if (!ev.ctrlKey) return;                                   // a plain wheel scrolls the page as usual
-    ev.preventDefault();
-    zoomBy(ev.deltaY < 0 ? 1.25 : 0.8, timeAt(ev.clientX));
-  }, { passive: false });
+  zoomIn.addEventListener('click', () => view.zoomBy(2));
+  zoomOut.addEventListener('click', () => view.zoomBy(0.5));
+  fit.addEventListener('click', () => view.fit());
 
   // Keep the playhead in step with the audio, following it when zoomed in.
   let raf = null;
   const follow = () => {
     const a = audio();
-    if (a && span < wf.duration && !a.paused) {
-      if (a.currentTime > start + span * 0.92 || a.currentTime < start) { start = a.currentTime - span * 0.08; clampView(); }
-    }
-    draw();
+    if (a && view.span < view.duration && !a.paused) view.ensureVisible(a.currentTime);
+    view.draw();
     raf = (a && !a.paused && document.body.contains(canvas)) ? requestAnimationFrame(follow) : null;
   };
   const kick = () => { if (!raf) raf = requestAnimationFrame(follow); };
+  const redraw = () => view.draw();
   const a = audio();
   if (a) {
-    for (const ev of ['play', 'playing']) { a.addEventListener(ev, kick); wfListeners.push([a, ev, kick]); }
-    for (const ev of ['seeked', 'timeupdate', 'pause', 'loadedmetadata']) { a.addEventListener(ev, draw); wfListeners.push([a, ev, draw]); }
+    for (const ev of ['play', 'playing']) { a.addEventListener(ev, kick); waveListeners.push([a, ev, kick]); }
+    for (const ev of ['seeked', 'timeupdate', 'pause', 'loadedmetadata']) { a.addEventListener(ev, redraw); waveListeners.push([a, ev, redraw]); }
   }
-  window.addEventListener('resize', draw); wfListeners.push([window, 'resize', draw]);
-  requestAnimationFrame(draw);
+  view.draw();
 }
 
 function getPlayerTime() {
@@ -993,12 +875,46 @@ function setupPlayer(resource) {
   let bar = document.getElementById('player-bar');
   if (bar) return;  // only created once, survives re-renders of #detail
   bar = el('div', { class: 'player-bar', id: 'player-bar' });
-  const audio = el('audio', { id: 'player', controls: 'controls', preload: 'none' });
-  // Prefer the compressed listening copy (a 30-minute 32-bit WAV is ~700 MB); fall back to the original
-  // while the copy is still being made. The waveform is timed against the original, and both have the same length.
+  // No native controls: the bar is the UI. Prefer the compressed listening copy (a 30-minute 32-bit WAV is ~700 MB);
+  // fall back to the original while the copy is still being made. Both have the same length.
+  const audio = el('audio', { id: 'player', preload: 'metadata' });
   audio.src = resource.has_preview ? `/api/resources/${resourceId}/preview` : `/api/resources/${resourceId}/audio`;
-  bar.append(audio);
+  const play = el('button', { class: 'pb-play', type: 'button', 'aria-label': 'Play' }, ['▶']);
+  const cur = el('span', { class: 'pb-time' }, ['0:00']);
+  const canvas = el('canvas', { class: 'pb-wave' });
+  const dur = el('span', { class: 'pb-time' }, [AudioWave.fmtClock(resource.duration_seconds || 0)]);
+  const expand = el('a', { class: 'pb-expand', href: `/edit/${resource.id}`, title: 'Open the waveform editor', 'aria-label': 'Open the waveform editor' }, ['⛶']);
+  bar.append(audio, play, cur, canvas, dur, expand);
   document.body.append(bar);
+
+  const view = new AudioWave.WaveView(canvas, {
+    duration: resource.duration_seconds || 0, scrub: true,
+    getTime: () => audio.currentTime || 0,
+    onSeek: (t) => { audio.currentTime = t; },
+  });
+  play.addEventListener('click', () => { if (audio.paused) { const p = audio.play(); if (p && p.catch) p.catch(() => {}); } else audio.pause(); });
+  const sync = () => { play.textContent = audio.paused ? '▶' : '⏸'; play.setAttribute('aria-label', audio.paused ? 'Play' : 'Pause'); };
+  for (const ev of ['play', 'pause', 'ended']) audio.addEventListener(ev, sync);
+  audio.addEventListener('loadedmetadata', () => { if (isFinite(audio.duration) && !view.wf) view.setDuration(audio.duration); dur.textContent = AudioWave.fmtClock(isFinite(audio.duration) ? audio.duration : (resource.duration_seconds || 0)); });
+  let raf = null;
+  const tick = () => { cur.textContent = AudioWave.fmtClock(audio.currentTime || 0); view.draw(); raf = audio.paused ? null : requestAnimationFrame(tick); };
+  const kick = () => { if (!raf) raf = requestAnimationFrame(tick); };
+  audio.addEventListener('play', kick);
+  for (const ev of ['seeked', 'timeupdate', 'pause']) audio.addEventListener(ev, () => { cur.textContent = AudioWave.fmtClock(audio.currentTime || 0); view.draw(); });
+  view.draw();
+
+  // The waveform arrives a little after the page (it is generated in the background); until then the bar is a plain
+  // progress line that already works as a scrubber.
+  let tries = 0;
+  const load = async () => {
+    if (!document.body.contains(bar)) return;
+    try {
+      const wf = await AudioWave.loadWaveform(resource.id);
+      if (wf) { view.setWaveform(wf, resource.duration_seconds); return; }
+      if (++tries < 200) setTimeout(load, 3000);
+    } catch (e) { /* the recording page shows the reason; the bar just stays a progress line */ }
+  };
+  setTimeout(load, 0);
 }
 
 // Filing copies the recording to the NAS in the background (large files take a while), so this

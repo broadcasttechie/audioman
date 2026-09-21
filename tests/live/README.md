@@ -23,6 +23,8 @@ Run one (from the dev machine; needs `ssh pmx2`):
 | `live_inbox_disk_budget.py` | the Inbox pull's disk admission (fake rclone) |
 | `live_inbox_and_filing.py` | recursive Inbox pull, sidecars, held project files, background filing through the real worker |
 | `live_batch_review.py` | the batch endpoint, incl. filing through the worker |
+| `live_editor.py` | the calls the waveform editor makes: clips with the page's rounding and the end-of-recording edge, every export format through the worker, deleting an exported clip |
+| `live_places.py` | place names from the real Photon: the queue, typed names, moving, Photon down, provider switching |
 | `live_map.py` | map config/pins with the Library's filters, unlocated counts, the track data the route map draws, choosing a location on the map |
 | `live_previews.py` | waveform + listening-copy generation through the worker, failures, NAS-down skipping, the real 15-minute file |
 
@@ -31,7 +33,9 @@ Running them while a real Inbox pull or filing is in progress could interleave w
 
 ## JavaScript tests (run on the dev machine, no dependencies)
 
-    node tests/js/test_map.js
+    for f in test_map test_waveform test_detail_page test_editor_page; do node tests/js/$f.js; done
 
-Tests the map component (`app/static/map.js`) with a fake canvas: projection, tile selection, zoom/pan, interpolation
-along a route, nearest point on a route, clustering, pointer handling.
+`test_map.js` / `test_waveform.js` test the map and waveform components with a fake canvas. `test_detail_page.js` and `test_editor_page.js`
+run the real page scripts (`resource_detail.html`, `edit.html`) under a small fake DOM (`minidom.js`) and check what a user would see
+happen: the bottom player, click-the-route-to-play, selecting and saving clips, keyboard shortcuts, exporting. They exist because a
+shipped bug (a waveform stuck on "Generating") was invisible to tests that only covered the parser.

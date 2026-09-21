@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Waveform editor{% endblock %}
+{% block head %}
+<style>
+  .container { max-width: none; }
+  body { padding-bottom: calc(var(--nav-size) + env(safe-area-inset-bottom)); }
+  h1 { font-size: 1.05rem; margin: 0.25rem 0 0.5rem; word-break: break-all; }
+  .box { border: 1px solid #8884; border-radius: 8px; padding: 0.4rem; margin-bottom: 0.6rem; }
+  .ed-wave { display: block; width: 100%; height: clamp(200px, 38vh, 380px); color: CanvasText; }
+  .ed-over { display: block; width: 100%; height: 44px; color: CanvasText; margin-top: 0.3rem; cursor: pointer; }
+  .bar { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.5rem; }
+  .bar button, .bar select { padding: 0.35rem 0.7rem; font-size: 0.9rem; }
+  .bar button.on { background: #3a7bd522; border-color: #3a7bd5; font-weight: 600; }
+  .bar .grow { flex: 1; }
+  .clock { font-variant-numeric: tabular-nums; font-size: 0.9rem; opacity: 0.85; }
+  .bar label { font-size: 0.85rem; white-space: nowrap; }
+  .sel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); gap: 0.5rem; margin-bottom: 0.5rem; }
+  .sel-grid label { display: block; font-size: 0.75rem; opacity: 0.8; }
+  .sel-grid input { width: 100%; font-variant-numeric: tabular-nums; }
+  .clip { border: 1px solid #8884; border-radius: 8px; padding: 0.5rem 0.6rem; margin-bottom: 0.5rem; }
+  .clip.sel { border-color: #2a9d4b; background: #2a9d4b12; }
+  .clip-head { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .clip-head input { flex: 1 1 8rem; min-width: 0; }
+  .clip .meta { font-size: 0.8rem; opacity: 0.7; white-space: nowrap; }
+  .clip .acts { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  .clip .acts button, .clip .acts select, .clip .acts a { padding: 0.2rem 0.6rem; font-size: 0.82rem; }
+  #msg { min-height: 1.3rem; font-size: 0.85rem; margin-bottom: 0.4rem; }
+  .keys { font-size: 0.78rem; opacity: 0.7; line-height: 1.5; }
+  .keys kbd { border: 1px solid #8886; border-radius: 4px; padding: 0 0.3rem; font-size: 0.75rem; }
+</style>
+{% endblock %}
+{% block content %}
+<a class="back-link" id="back" href="/review/{{ resource_id }}">&larr; Back to the recording</a>
+<h1 id="title">Loading&hellip;</h1>
+<div id="ed" class="status">Loading&hellip;</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/app.js"></script>
+<script src="/static/waveform.js"></script>
+<script>
+const resourceId = {{ resource_id | tojson }};
+const EXPORT_FORMATS = [['original', 'Original format'], ['wav', 'WAV'], ['flac', 'FLAC'], ['mp3', 'MP3']];
+const T = (t, d) => AudioWave.fmtClock(t, d === undefined ? 1 : d);
+// Round DOWN to milliseconds: rounding to nearest could put a clip's end a hair past the recording's end (901.8025 -> 901.803),
+// which the server rightly refuses.
+const ms = (x) => Math.floor(x * 1000) / 1000;
+
+async function main() {
+  const root = document.getElementById('ed');
+  let resource, clips;
+  try {
+    [resource, clips] = await Promise.all([apiJson('GET', `/api/resources/${resourceId}`), apiJson('GET', `/api/resources/${resourceId}/clips`)]);
+  } catch (e) { root.textContent = 'Error: ' + e.message; root.className = 'status err'; return; }
+  root.className = ''; root.replaceChildren();
+  document.getElementById('title').textContent = resource.filename;
+  const duration = resource.duration_seconds || 0;
+
+  // ---- the audio (compressed listening copy if there is one; the times are the same either way)
+  const audio = el('audio', { preload: 'metadata' });
+  audio.src = resource.has_preview ? `/api/resources/${resourceId}/preview` : `/api/resources/${resourceId}/audio`;
+  root.append(audio);
+
+  let selectedClipId = null, range = null, mode = 'select', follow = true, raf = null;
+  const msg = el('div', { id: 'msg' });
+  const say = (text, bad) => { msg.textContent = text || ''; msg.className = bad ? 'status err' : 'status ok'; };
+
+  // ---- views
+  const mainCanvas = el('canvas', { class: 'ed-wave' }), overCanvas = el('canvas', { class: 'ed-over' });
+  const note = el('p', { class: 'hint' }, ['Generating the waveform… you can already play and choose times.']);
+  const clock = el('span', { class: 'clock' }, ['']);
+  const regions = () => clips.map(c => ({ id: c.id, start: c.start_seconds, end: c.end_seconds, label: c.label || '', selected: c.id === selectedClipId }));
+  const view = new AudioWave.WaveView(mainCanvas, {
+    duration, zoomable: true, ruler: true, selectable: true, mode, wheelZoom: 'always', regions,
+    getTime: () => audio.currentTime || 0,
+    onSeek: (t) => { audio.currentTime = t; paint(); },
+    onSelect: (s) => { if (s) selectedClipId = null; showSelection(s); },
+    onRegionClick: (r) => selectClip(clips.find(c => c.id === r.id)),
+    onDraw: () => { clock.textContent = `${T(audio.currentTime || 0)} / ${T(duration, 0)}` + (view.span < view.duration - 0.01 ? `  · view ${T(view.start)}–${T(view.start + view.span)}` : ''); },
+  });
+  const overview = new AudioWave.WaveView(overCanvas, { duration, overviewOf: view, getTime: () => audio.currentTime || 0 });
+  const paint = () => { view.draw(); overview.draw(); };
+
+  // ---- transport
+  const playBtn = el('button', { type: 'button', 'aria-label': 'Play' }, ['▶ Play']);
+  const seekBy = (d) => { audio.currentTime = Math.min(duration || Infinity, Math.max(0, (audio.currentTime || 0) + d)); view.ensureVisible(audio.currentTime); paint(); };
+  const togglePlay = () => {
+    if (audio.paused) { range = null; const p = audio.play(); if (p && p.catch) p.catch(() => say('The browser blocked playback; press Play again.', true)); }
+    else { audio.pause(); range = null; }
+  };
+  playBtn.addEventListener('click', togglePlay);
+  const loop = el('input', { type: 'checkbox', id: 'loop' });
+  const speed = el('select', { 'aria-label': 'Speed' }, ['0.5', '0.75', '1', '1.25', '1.5', '2'].map(v => el('option', { value: v }, [v + '×'])));
+  speed.value = '1';
+  speed.addEventListener('change', () => { audio.playbackRate = parseFloat(speed.value); });
+  const modeBtn = el('button', { type: 'button', title: 'Drag on the waveform to select (Select) or to pan it (Move)' }, ['']);
+  const setMode = (m) => { mode = m; view.mode = m; modeBtn.textContent = m === 'select' ? 'Mode: Select' : 'Mode: Move'; modeBtn.classList.toggle('on', m === 'select'); };
+  modeBtn.addEventListener('click', () => setMode(mode === 'select' ? 'move' : 'select'));
+  setMode('select');
+  const btn = (label, fn, title) => { const b = el('button', { type: 'button', title: title || '' }, [label]); b.addEventListener('click', fn); return b; };
+  const followBox = el('input', { type: 'checkbox', checked: 'checked', id: 'follow' });
+  followBox.addEventListener('change', () => { follow = followBox.checked; });
+  const transport = el('div', { class: 'bar' }, [
+    btn('⏮ 10 s', () => seekBy(-10)), playBtn, btn('10 s ⏭', () => seekBy(10)),
+    el('label', {}, [loop, ' loop']), speed, modeBtn,
+    btn('−', () => view.zoomBy(0.5), 'Zoom out'), btn('+', () => view.zoomBy(2), 'Zoom in'), btn('Fit', () => view.fit()),
+    el('label', {}, [followBox, ' follow']), el('span', { class: 'grow' }), clock,
+  ]);
+
+  // ---- selection panel
+  const startIn = el('input', { type: 'text', id: 'sel-start', inputmode: 'decimal', placeholder: '0:00.0' });
+  const endIn = el('input', { type: 'text', id: 'sel-end', inputmode: 'decimal', placeholder: '0:00.0' });
+  const lenOut = el('input', { type: 'text', id: 'sel-len', readonly: 'readonly' });
+  const labelIn = el('input', { type: 'text', id: 'clip-label', placeholder: 'Label, e.g. Jacob says hello' });
+  function showSelection(s) {
+    startIn.value = s ? T(s.start, 2) : ''; endIn.value = s ? T(s.end, 2) : '';
+    lenOut.value = s ? (s.end - s.start).toFixed(2) + ' s' : '';
+    saveBtn.disabled = !s; playSelBtn.disabled = !s; zoomSelBtn.disabled = !s; clearBtn.disabled = !s;
+    paint();
+  }
+  const fromInputs = () => {
+    const a = AudioWave.parseTime(startIn.value), b = AudioWave.parseTime(endIn.value);
+    const cur = view.getSelection();
+    // A box that has text but isn't a time is an error (and is put back), not something to ignore quietly.
+    const bad = (startIn.value.trim() && Number.isNaN(a)) || (endIn.value.trim() && Number.isNaN(b));
+    const s = Number.isNaN(a) ? (cur ? cur.start : NaN) : a, e = Number.isNaN(b) ? (cur ? cur.end : NaN) : b;
+    if (bad || Number.isNaN(s) || Number.isNaN(e)) { say('Type times like 1:02.5 or 62.5.', true); showSelection(cur); return; }
+    say(''); view.setSelection(s, e);
+  };
+  startIn.addEventListener('change', fromInputs); endIn.addEventListener('change', fromInputs);
+  const setStart = () => { const s = view.getSelection(), t = audio.currentTime || 0; view.setSelection(t, s && s.end > t ? s.end : Math.min(duration, t + 1)); };
+  const setEnd = () => { const s = view.getSelection(), t = audio.currentTime || 0; view.setSelection(s && s.start < t ? s.start : Math.max(0, t - 1), t); };
+  const playRange = (a, b) => { range = { start: a, end: b }; audio.currentTime = a; view.ensureVisible(a); const p = audio.play(); if (p && p.catch) p.catch(() => {}); };
+  const playSelBtn = btn('▶ Play selection', () => { const s = view.getSelection(); if (s) playRange(s.start, s.end); });
+  const zoomSelBtn = btn('Zoom to selection', () => { const s = view.getSelection(); if (s) view.zoomToRange(s.start, s.end); });
+  const clearBtn = btn('Clear', () => { view.clearSelection(); say(''); });
+  const saveBtn = btn('Save as clip', saveClip, 'Keep this range as a named clip');
+  saveBtn.classList.add('on');
+  const panel = el('div', { class: 'box' }, [
+    el('div', { class: 'sel-grid' }, [
+      el('div', {}, [el('label', { for: 'sel-start' }, ['Start']), startIn]), el('div', {}, [el('label', { for: 'sel-end' }, ['End']), endIn]),
+      el('div', {}, [el('label', { for: 'sel-len' }, ['Length']), lenOut]), el('div', {}, [el('label', { for: 'clip-label' }, ['Label']), labelIn]),
+    ]),
+    el('div', { class: 'bar' }, [btn('Set start here', setStart, 'Shortcut: I'), btn('Set end here', setEnd, 'Shortcut: O'), playSelBtn, zoomSelBtn, saveBtn, clearBtn]),
+  ]);
+  showSelection(null);
+
+  // ---- clips
+  const clipList = el('div');
+  async function refreshClips() {
+    clips = await apiJson('GET', `/api/resources/${resourceId}/clips`);
+    renderClips(); paint();
+  }
+  async function saveClip() {
+    const s = view.getSelection();
+    if (!s) return say('Drag on the waveform to select a range first.', true);
+    try {
+      const made = await apiJson('POST', `/api/resources/${resourceId}/clips`, { start_seconds: ms(s.start), end_seconds: ms(s.end), label: labelIn.value.trim() || null });
+      selectedClipId = made.id; labelIn.value = '';
+      view.setSelection(null, null, true); showSelection(null);
+      await refreshClips(); say(`Saved a clip of ${(made.end_seconds - made.start_seconds).toFixed(1)} s.`);
+    } catch (e) { say('Could not save: ' + e.message, true); }
+  }
+  function selectClip(c) {
+    if (!c) return;
+    selectedClipId = c.id; view.setSelection(c.start_seconds, c.end_seconds, true);
+    selectedClipId = c.id; showSelection(view.getSelection()); renderClips();
+    view.ensureVisible(c.start_seconds);
+  }
+  function renderClips() {
+    clipList.replaceChildren();
+    if (!clips.length) { clipList.append(el('p', { class: 'hint' }, ['No clips yet. Drag on the waveform to select a range, then Save as clip.'])); return; }
+    for (const c of clips.slice().sort((a, b) => a.start_seconds - b.start_seconds)) clipList.append(clipRow(c));
+  }
+  function clipRow(c) {
+    const name = el('input', { type: 'text', value: c.label || '', placeholder: 'Label' });
+    name.addEventListener('change', async () => { try { Object.assign(c, await apiJson('PATCH', `/api/clips/${c.id}`, { label: name.value.trim() || null })); say('Renamed.'); paint(); } catch (e) { say(e.message, true); } });
+    const fmt = el('select', { 'aria-label': 'Export format' }, EXPORT_FORMATS.map(([v, l]) => el('option', { value: v }, [l])));
+    const exportBtn = btn('Export', () => exportClip(c, fmt.value, exportBtn));
+    const row = el('div', { class: 'clip' + (c.id === selectedClipId ? ' sel' : ''), id: 'clip-' + c.id }, [
+      el('div', { class: 'clip-head' }, [name, el('span', { class: 'meta' }, [`${T(c.start_seconds)}–${T(c.end_seconds)} · ${(c.end_seconds - c.start_seconds).toFixed(1)} s`])]),
+      el('div', { class: 'acts' }, [
+        btn('▶ Play', () => playRange(c.start_seconds, c.end_seconds)),
+        btn('Select', () => selectClip(c)),
+        btn('Use current selection', async () => {
+          const s = view.getSelection(); if (!s) return say('Select a range first.', true);
+          try { Object.assign(c, await apiJson('PATCH', `/api/clips/${c.id}`, { start_seconds: ms(s.start), end_seconds: ms(s.end) })); renderClips(); paint(); say('Clip updated.'); } catch (e) { say(e.message, true); }
+        }, 'Change this clip to the range currently selected'),
+        fmt, exportBtn,
+        btn('Delete', async () => { if (!confirm('Delete this clip?')) return; try { await apiJson('DELETE', `/api/clips/${c.id}`); if (selectedClipId === c.id) selectedClipId = null; await refreshClips(); } catch (e) { say(e.message, true); } }),
+      ]),
+    ]);
+    return row;
+  }
+  async function exportClip(c, format, button) {
+    button.disabled = true; button.textContent = 'Queuing…';
+    try {
+      const exp = await apiJson('POST', `/api/resources/${resourceId}/export`, { clip_id: c.id, format });
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 1500));
+        const s = await apiJson('GET', `/api/exports/${exp.id}`);
+        if (s.status === 'success') {
+          const a = el('a', { href: `/api/exports/${exp.id}/download`, download: '' }, ['Download']);
+          button.replaceWith(a); say('Export ready.'); return;
+        }
+        if (s.status === 'error') throw new Error(s.error_detail || 'the export failed');
+        button.textContent = 'Working…';
+      }
+      throw new Error('still processing; check back later');
+    } catch (e) { button.disabled = false; button.textContent = 'Export'; say('Export: ' + e.message, true); }
+  }
+
+  root.append(el('div', { class: 'box' }, [note, mainCanvas, overCanvas]), transport, msg, panel, el('h2', {}, ['Clips']), clipList,
+    el('p', { class: 'keys' }, [
+      el('kbd', {}, ['Space']), ' play/pause · ', el('kbd', {}, ['← →']), ' ±1 s (', el('kbd', {}, ['Shift']), ' 10 s, ', el('kbd', {}, ['Alt']), ' 0.1 s) · ',
+      el('kbd', {}, ['I']), ' / ', el('kbd', {}, ['O']), ' set start / end at the playhead · ', el('kbd', {}, ['Enter']), ' play selection · ',
+      el('kbd', {}, ['C']), ' save clip · ', el('kbd', {}, ['L']), ' loop · ', el('kbd', {}, ['S']), ' select/move · ', el('kbd', {}, ['+ − 0']), ' zoom · ', el('kbd', {}, ['Esc']), ' clear',
+    ]));
+  renderClips();
+
+  // ---- keyboard
+  document.addEventListener('keydown', (ev) => {
+    const tag = ev.target && ev.target.tagName;
+    if (ev.ctrlKey || ev.metaKey || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    const step = ev.shiftKey ? 10 : (ev.altKey ? 0.1 : 1);
+    const k = ev.key;
+    const handled = () => { if (ev.preventDefault) ev.preventDefault(); };
+    if (k === ' ') { handled(); togglePlay(); }
+    else if (k === 'ArrowLeft') { handled(); seekBy(-step); }
+    else if (k === 'ArrowRight') { handled(); seekBy(step); }
+    else if (k === 'i' || k === 'I') { handled(); setStart(); }
+    else if (k === 'o' || k === 'O') { handled(); setEnd(); }
+    else if (k === 'Enter') { handled(); const s = view.getSelection(); if (s) playRange(s.start, s.end); }
+    else if (k === 'Escape') { view.clearSelection(); range = null; }
+    else if (k === 'c' || k === 'C') { handled(); saveClip(); }
+    else if (k === 'l' || k === 'L') { loop.checked = !loop.checked; }
+    else if (k === 's' || k === 'S') { setMode(mode === 'select' ? 'move' : 'select'); }
+    else if (k === '+' || k === '=') { view.zoomBy(2); }
+    else if (k === '-' || k === '_') { view.zoomBy(0.5); }
+    else if (k === '0') { view.fit(); }
+  });
+
+  // ---- keep everything in step with the audio (and stop at the end of a played range)
+  const tick = () => {
+    if (range && (audio.currentTime || 0) >= range.end - 0.005) {
+      if (loop.checked) audio.currentTime = range.start; else { audio.pause(); audio.currentTime = range.end; range = null; }
+    }
+    if (follow && !audio.paused && view.span < view.duration) view.ensureVisible(audio.currentTime || 0);
+    playBtn.textContent = audio.paused ? '▶ Play' : '⏸ Pause';
+    paint();
+    raf = audio.paused ? null : requestAnimationFrame(tick);
+  };
+  const kick = () => { if (!raf) raf = requestAnimationFrame(tick); };
+  audio.addEventListener('play', kick);
+  for (const ev of ['pause', 'seeked', 'ended', 'loadedmetadata']) audio.addEventListener(ev, () => { playBtn.textContent = audio.paused ? '▶ Play' : '⏸ Pause'; paint(); });
+  audio.addEventListener('loadedmetadata', () => { if (isFinite(audio.duration) && !view.wf && !duration) { view.setDuration(audio.duration); overview.setDuration(audio.duration); } });
+  paint();
+
+  // ---- the waveform arrives a little after the page for a new recording
+  let tries = 0;
+  const load = async () => {
+    try {
+      const wf = await AudioWave.loadWaveform(resourceId);
+      if (!wf) { if (++tries < 200) setTimeout(load, 3000); return; }
+      view.setWaveform(wf, duration); overview.setWaveform(wf, duration); note.remove();
+    } catch (e) { note.textContent = 'The waveform could not be loaded: ' + e.message; }
+  };
+  setTimeout(load, 0);
+}
+
+main();
+</script>
+{% endblock %}

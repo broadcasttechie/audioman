@@ -910,7 +910,10 @@ def update_clip(clip_id):
 
 @bp.delete("/clips/<clip_id>")
 def delete_clip(clip_id):
+    """Delete the clip marker. Anything already exported from it is kept (the file and its record): a marker being
+    tidied away must not take a deliverable with it, and the database would refuse to delete a clip that exports point at."""
     clip = Clip.query.get_or_404(clip_id)
+    Export.query.filter_by(clip_id=clip.id).update({"clip_id": None}, synchronize_session=False)
     db.session.delete(clip)
     db.session.commit()
     return "", 204

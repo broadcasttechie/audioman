@@ -305,6 +305,22 @@ No migration was needed (the user confirmed only test data exists), so the chang
   harness (`tests/js/`), fixed, deployed. It shipped because earlier tests covered the parser but not the page flow.
 - Tests: 114 unit, 14 live suites, 20 Node checks (`tests/js/test_map.js`, `test_detail_page.js`).
 
+## Built 2026-09-21: waveform in the bottom player, and a full-screen waveform editor (user request)
+- **Bottom player** is now a custom bar: play/pause, time, a **waveform you can press or drag to scrub**, length, and an "open the
+  editor" button. **Editor** at `/edit/<id>`: big waveform with ruler and overview strip, drag to select (edges adjustable),
+  labelled clip regions, transport with loop and speed, typed start/end, keyboard shortcuts, and a clips list with rename / use
+  selection / delete / **export (original, WAV, FLAC, MP3 through the existing worker job)**. One shared component
+  (`app/static/waveform.js`) draws all three waveforms. Details and the **processing roadmap (32-bit float conversion etc.,
+  non-destructive, new derived files)** are in PLAN 21; the processing itself is not built.
+- **Bugs found and fixed on the way:** (1) deleting a clip that had been exported failed with a database error (exports point at the
+  clip); delete now keeps the exports and detaches them. (2) The waveform is ~10 ms longer than the audio, so a clip dragged to the
+  end was refused by the server; selections now clamp to the recording's real duration and round down.
+- **Verification:** 50 Node tests (`tests/js/`: map 16, waveform 14, recording page 8, editor 12) that run the real page scripts under a
+  small fake DOM (`tests/js/minidom.js`): scrubbing the bar, click-the-route-plays, dragging a selection, saving/renaming/deleting
+  clips, keyboard shortcuts, play-a-range and loop, export flow, waveform 202/500 states. Plus `live_editor.py` (24 checks: the exact
+  clip calls with the page's rounding, the end-of-recording edge, all four export formats through the real worker and download).
+  **Not verified: the look and feel in a real browser.**
+
 ## Fixed 2026-09-21 (found by a regression run and by looking at Home)
 - **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
 - **Stranded queue rows:** a worker restarted mid-job left its row `running`, which blocked new runs of that job for

@@ -8,6 +8,7 @@ class Element {
     this.attributes = {}; this.style = {}; this.dataset = {}; this._listeners = {}; this._text = null;
     this.className = ''; this.hidden = false; this.disabled = false; this.checked = false; this.value = ''; this.type = '';
     this.clientWidth = 600; this.clientHeight = 200; this.width = 0; this.height = 0; this.scrollTop = 0;
+    this.paused = true; this.currentTime = 0; this.duration = NaN; this.playbackRate = 1;
   }
   get parentElement() { return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null; }
   get firstChild() { return this.children[0] || null; }
@@ -26,6 +27,7 @@ class Element {
   replaceChildren(...nodes) { this.children.forEach(c => (c.parentNode = null)); this.children = []; this.append(...nodes); }
   removeChild(n) { this.children = this.children.filter(c => c !== n); n.parentNode = null; return n; }
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
+  replaceWith(node) { const p = this.parentNode; if (!p) return; const i = p.children.indexOf(this); p.children.splice(i, 1, node); node.parentNode = p; this.parentNode = null; }
   setAttribute(k, v) { this.attributes[k] = String(v); if (k === 'class') this.className = String(v); if (k === 'value') this.value = String(v); if (k === 'checked') this.checked = true; if (k === 'type') this.type = String(v); }
   getAttribute(k) { return k in this.attributes ? this.attributes[k] : null; }
   addEventListener(t, fn) { (this._listeners[t] = this._listeners[t] || []).push(fn); }
@@ -35,7 +37,10 @@ class Element {
   getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight, right: this.clientWidth, bottom: this.clientHeight }; }
   querySelectorAll(sel) { const out = []; const test = matcher(sel); const walk = (n) => { for (const c of n.children) { if (c.nodeType === 1) { if (test(c)) out.push(c); walk(c); } } }; walk(this); return out; }
   querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
-  getContext() { const calls = []; return new Proxy({ calls }, { get: (t, k) => (k in t ? t[k] : k === 'measureText' ? () => ({ width: 24 }) : (...a) => { calls.push([k, ...a]); }), set: () => true }); }
+  getContext() { if (!this._ctx) { const calls = []; this._ctx = new Proxy({ calls }, { get: (t, k) => (k in t ? t[k] : k === 'measureText' ? () => ({ width: 24 }) : (...a) => { calls.push([k, ...a]); }), set: () => true }); } return this._ctx; }
+  get ctxCalls() { return this.getContext().calls; }
+  play() { this.paused = false; this.dispatch('play'); return Promise.resolve(); }
+  pause() { this.paused = true; this.dispatch('pause'); }
   setPointerCapture() {} focus() {} scrollIntoView() {} click() { this.dispatch('click'); }
 }
 
@@ -52,7 +57,9 @@ function createDom() {
   doc.getElementById = (id) => { const walk = (n) => { for (const c of n.children) { if (c.nodeType === 1) { if (c.id === id) return c; const f = walk(c); if (f) return f; } } return null; }; return walk(doc.body); };
   doc.querySelectorAll = (s) => doc.body.querySelectorAll(s);
   doc.querySelector = (s) => doc.body.querySelector(s);
-  doc.addEventListener = () => {};
+  doc._listeners = {};
+  doc.addEventListener = (t, fn) => { (doc._listeners[t] = doc._listeners[t] || []).push(fn); };
+  doc.dispatch = (t, ev = {}) => { const e = Object.assign({ type: t, target: doc.body, preventDefault() { e.defaultPrevented = true; } }, ev); (doc._listeners[t] || []).slice().forEach(f => f(e)); return e; };
   doc.hidden = false;
   return { document: doc, Element, TextNode };
 }

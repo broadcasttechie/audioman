@@ -35,6 +35,11 @@ def resource_detail(resource_id):
     return render_template("resource_detail.html", active_tab="review", resource_id=resource_id)
 
 
+@ui_bp.get("/edit/<resource_id>")
+def edit_recording(resource_id):
+    return render_template("edit.html", active_tab="review", resource_id=resource_id)
+
+
 @ui_bp.get("/library")
 def library():
     return render_template("library.html", active_tab="library")
