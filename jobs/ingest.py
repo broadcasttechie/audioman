@@ -17,14 +17,16 @@ Two deliberate behavioral decisions, not defaults to revisit lightly:
    file is quarantined under STAGING_DIR/duplicates and logged, NOT
    auto-discarded. Whether a genuine duplicate should just be deleted
    is a real policy decision this doesn't make for you.
-2. Only a fixed set of embedded metadata tags count as a trustworthy
-   recording timestamp (TRUSTED_TIMESTAMP_TAGS below). Filesystem
-   mtime is deliberately never used as a fallback — it survives
-   uploads/moves unreliably, so a wrong-but-plausible timestamp would
-   be worse than none (silently mis-locating a recording via Dawarich).
-   No trusted tag found -> captured_at stays None, source "manual",
-   and enrichment is skipped entirely for that resource (no
-   captured_at means nothing to search a time window around).
+2. The recording time comes from (see _resolve_capture): a filename date read by
+   a TRUSTED recorder profile (source "filename"); else a fixed set of embedded
+   metadata tags (TRUSTED_TIMESTAMP_TAGS below; source "embedded"). Both are
+   `exact`. A date from a merely "suggest" profile is stored as a suggestion for
+   the user to confirm, not applied. Filesystem mtime is deliberately never
+   used — it survives uploads/moves unreliably, and one of the user's recorders
+   doesn't set it at all, so a wrong-but-plausible timestamp would be worse than
+   none (silently mis-locating a recording via Dawarich). No date -> captured_at
+   stays None (precision "unknown") and enrichment is skipped entirely for that
+   resource (no captured_at means nothing to search a time window around).
 """
 import hashlib
 import json
@@ -37,6 +39,8 @@ from config import Config
 from app.extensions import db
 from app.timeutil import parse_exif_datetime
 from app.models import Resource, FileEvent
+from .filename_patterns import match_filename
+from .profiles import active_profiles
 
 TRUSTED_TIMESTAMP_TAGS = [
     "DateTimeOriginal",
@@ -81,15 +85,18 @@ def ingest_staged_file(local_path, drive_inbox_path=None):
     except Exception as e:
         return _fail(checksum, local_path, "metadata-extraction", str(e))
 
-    captured_at, captured_at_source = _extract_timestamp(local_path)
+    capture = _resolve_capture(local_path, drive_inbox_path)
 
     resource = Resource(
         checksum=checksum,
         filename=filename,
         format=probe["format"],
         duration_seconds=probe["duration_seconds"],
-        captured_at=captured_at,
-        captured_at_source=captured_at_source,
+        captured_at=capture["captured_at"],
+        captured_at_source=capture["source"],
+        captured_at_precision=capture["precision"],
+        suggested_captured_at=capture["suggested"],
+        filename_info=capture["info"],
         category=None,  # set during review, not inferable here
         status="pending-review",
         drive_inbox_path=drive_inbox_path,
@@ -127,6 +134,39 @@ def _ffprobe(path):
         "format": (fmt.get("format_name") or "").split(",")[0] or None,
         "duration_seconds": float(duration) if duration else None,
     }
+
+
+EMBEDDED_DISAGREE_SECONDS = 120
+
+
+def _resolve_capture(local_path, drive_inbox_path=None):
+    """
+    Decide captured_at for a new file. Returns a dict: captured_at, source, precision,
+    suggested (a date awaiting confirmation) and info (what the filename told us).
+    """
+    filename = os.path.basename(local_path)
+    embedded, _ = _extract_timestamp(local_path)
+    fm = match_filename(filename, active_profiles())
+
+    info = {"profile": fm.profile if fm else None}
+    if fm:
+        info.update({"title": fm.title, "is_edit": fm.is_edit, "seq": fm.seq,
+                     "unknown_reason": fm.unknown_reason, "time_known": fm.time_known})
+    folder = os.path.dirname(drive_inbox_path) if drive_inbox_path else ""
+    if folder:
+        info["folder"] = folder  # the only context some files have (e.g. STE-000 in "2024 France")
+
+    captured_at, source, precision, suggested = None, "manual", "unknown", None
+    if fm and fm.utc and fm.trusted and fm.time_known:
+        captured_at, source, precision = fm.utc, "filename", "exact"
+        if embedded and abs((embedded - fm.utc).total_seconds()) > EMBEDDED_DISAGREE_SECONDS:
+            info["embedded_disagrees"] = embedded.isoformat() + "Z"
+    elif embedded:
+        captured_at, source, precision = embedded, "embedded", "exact"
+    elif fm and fm.utc:
+        suggested = fm.utc
+    return {"captured_at": captured_at, "source": source, "precision": precision,
+            "suggested": suggested, "info": info}
 
 
 def _extract_timestamp(path):

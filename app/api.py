@@ -4,7 +4,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from .extensions import db
-from .models import Resource, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint
+from .models import Resource, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint, RecorderProfile
 from .settings import get_config, set_config, settings_snapshot, SECRET_KEYS
 from config import Config
 from .timeutil import parse_to_utc_naive, to_utc_iso
@@ -105,6 +105,20 @@ def update_resource(resource_id):
             return jsonify({"error": "The NAS is not available, so nothing was changed.",
                             "detail": nas_reason}), 503
 
+    if data.get("use_suggested_date"):
+        # Confirm the date a "suggest" recorder profile read from the filename.
+        if not r.suggested_captured_at:
+            return jsonify({"error": "this recording has no suggested date"}), 400
+        data["captured_at"] = r.suggested_captured_at
+        data["captured_at_source"] = "filename"
+        # A date-only filename can only ever be an approximate date.
+        data.setdefault("captured_at_precision",
+                        "exact" if (r.filename_info or {}).get("time_known", True) else "approximate")
+
+    if "captured_at_precision" in data and data["captured_at_precision"] not in ("exact", "approximate"):
+        return jsonify({"error": "captured_at_precision must be 'exact' or 'approximate' "
+                                 "(clear captured_at instead to make the date unknown)"}), 400
+
     if "captured_at" in data:
         # Time contract (app/timeutil.py): Z/offset strings become UTC; a string
         # with no offset is taken as UTC; null clears it.
@@ -128,9 +142,27 @@ def update_resource(resource_id):
             return jsonify({"error": f"unknown tag id(s): {unknown}"}), 400
         tags_to_set = [found[t] for t in wanted]
 
-    for field in ("category", "project_id", "captured_at", "captured_at_source"):
+    old_date, old_precision = r.captured_at, r.captured_at_precision
+    for field in ("category", "project_id", "captured_at_source"):
         if field in data:
             setattr(r, field, data[field])
+
+    if "captured_at" in data:
+        r.captured_at = data["captured_at"]
+        # A date implies exact (typed by hand) unless the caller says approximate; no date is unknown.
+        r.captured_at_precision = (data.get("captured_at_precision", "exact")
+                                   if r.captured_at is not None else "unknown")
+        r.suggested_captured_at = None
+    elif "captured_at_precision" in data:
+        if r.captured_at is None:
+            return jsonify({"error": "there is no date to mark as exact or approximate"}), 400
+        r.captured_at_precision = data["captured_at_precision"]
+
+    if (r.captured_at, r.captured_at_precision) != (old_date, old_precision):
+        # Anything looked up from the old time (track, auto location, companion photos) is
+        # now stale, and an approximate/unknown time must not be looked up at all. Derived
+        # data only: a location the user set by hand is kept. Enrichment re-queues itself.
+        _clear_derived_by_time(r)
 
     if tags_to_set is not None:
         r.tags = tags_to_set
@@ -165,6 +197,15 @@ def update_resource(resource_id):
 
     db.session.commit()
     return jsonify(_resource_to_dict(r))
+
+
+def _clear_derived_by_time(resource):
+    TrackPoint.query.filter_by(resource_id=resource.id).delete(synchronize_session=False)
+    ResourcePhoto.query.filter_by(resource_id=resource.id).delete(synchronize_session=False)
+    if resource.location is not None and resource.location.source != "manual":
+        db.session.delete(resource.location)
+    resource.dawarich_checked_at = None
+    resource.immich_checked_at = None
 
 
 def _file_resource(resource):
@@ -204,6 +245,9 @@ def _resource_to_dict(r: Resource):
         "status": r.status,
         "captured_at": to_utc_iso(r.captured_at),
         "captured_at_source": r.captured_at_source,
+        "captured_at_precision": r.captured_at_precision or ("exact" if r.captured_at else "unknown"),
+        "suggested_captured_at": to_utc_iso(r.suggested_captured_at),
+        "filename_info": r.filename_info,
         "duration_seconds": r.duration_seconds,
         "nas_path": r.nas_path,
         "tags": [t.name for t in r.tags],
@@ -283,6 +327,119 @@ def nas_health():
     from jobs.nas import nas_status
     ok, reason = nas_status()
     return jsonify({"ok": ok, "reason": reason, "root": Config.NAS_LIBRARY_ROOT}), (200 if ok else 503)
+
+
+# --- Recorder profiles: how each recorder's filenames are read (jobs/filename_patterns.py) ---
+
+def _profile_to_dict(p):
+    return {"id": p.id, "name": p.name, "patterns": p.patterns, "timezone": p.timezone,
+            "clock_offset_seconds": p.clock_offset_seconds, "date_trust": p.date_trust,
+            "priority": p.priority, "active": p.active}
+
+
+def _validate_profile(data, partial):
+    """Returns an error string or None."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    from jobs.filename_patterns import compile_pattern
+    if not partial or "name" in data:
+        if not isinstance(data.get("name"), str) or not data["name"].strip():
+            return "name is required"
+    if not partial or "patterns" in data:
+        pats = data.get("patterns")
+        if not isinstance(pats, list) or not all(isinstance(x, str) and x for x in pats):
+            return "patterns must be a list of non-empty strings"
+        for pattern in pats:
+            try:
+                compile_pattern(pattern)
+            except ValueError as e:
+                return f"pattern {pattern!r}: {e}"
+    if "timezone" in data:
+        try:
+            ZoneInfo(data["timezone"])
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            return "timezone must be an IANA name such as Europe/London"
+    if "clock_offset_seconds" in data:
+        v = data["clock_offset_seconds"]
+        if isinstance(v, bool) or not isinstance(v, int) or abs(v) > 86400:
+            return "clock_offset_seconds must be an integer within +/-86400 (recorder clock minus true time)"
+    if "date_trust" in data and data["date_trust"] not in ("trusted", "suggest"):
+        return "date_trust must be 'trusted' or 'suggest'"
+    if "priority" in data and (isinstance(data["priority"], bool) or not isinstance(data["priority"], int)):
+        return "priority must be an integer"
+    if "active" in data and not isinstance(data["active"], bool):
+        return "active must be true or false"
+    return None
+
+
+@bp.get("/recorder-profiles")
+def list_recorder_profiles():
+    from jobs.profiles import ensure_default_profiles
+    ensure_default_profiles()
+    rows = RecorderProfile.query.order_by(RecorderProfile.priority, RecorderProfile.name).all()
+    return jsonify([_profile_to_dict(p) for p in rows])
+
+
+@bp.post("/recorder-profiles")
+def create_recorder_profile():
+    data = request.get_json() or {}
+    error = _validate_profile(data, partial=False)
+    if error:
+        return jsonify({"error": error}), 400
+    if RecorderProfile.query.filter_by(name=data["name"].strip()).first():
+        return jsonify({"error": "a profile with that name already exists"}), 409
+    p = RecorderProfile(
+        name=data["name"].strip(), patterns=data["patterns"],
+        timezone=data.get("timezone", Config.DEFAULT_RECORDER_TIMEZONE),
+        clock_offset_seconds=data.get("clock_offset_seconds", 0),
+        date_trust=data.get("date_trust", "suggest"), priority=data.get("priority", 100),
+        active=data.get("active", True),
+    )
+    db.session.add(p)
+    db.session.commit()
+    return jsonify(_profile_to_dict(p)), 201
+
+
+@bp.patch("/recorder-profiles/<profile_id>")
+def update_recorder_profile(profile_id):
+    p = RecorderProfile.query.get_or_404(profile_id)
+    data = request.get_json() or {}
+    error = _validate_profile(data, partial=True)
+    if error:
+        return jsonify({"error": error}), 400
+    if "name" in data:
+        clash = RecorderProfile.query.filter(RecorderProfile.name == data["name"].strip(), RecorderProfile.id != p.id).first()
+        if clash:
+            return jsonify({"error": "a profile with that name already exists"}), 409
+        p.name = data["name"].strip()
+    for field in ("patterns", "timezone", "clock_offset_seconds", "date_trust", "priority", "active"):
+        if field in data:
+            setattr(p, field, data[field])
+    db.session.commit()
+    return jsonify(_profile_to_dict(p))
+
+
+@bp.post("/filename-preview")
+def filename_preview():
+    """What would ingest make of this filename? Nothing is stored. For trying patterns."""
+    from jobs.filename_patterns import match_filename
+    from jobs.profiles import active_profiles
+    name = (request.get_json() or {}).get("filename")
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({"error": "filename is required"}), 400
+    fm = match_filename(os.path.basename(name), active_profiles())
+    if fm is None:
+        return jsonify({"matched": False, "would_apply": "none"})
+    if fm.utc and fm.trusted and fm.time_known:
+        would = "captured_at"
+    elif fm.utc:
+        would = "suggestion"
+    else:
+        would = "none"
+    return jsonify({
+        "matched": True, "profile": fm.profile, "pattern": fm.pattern, "trusted": fm.trusted,
+        "utc": to_utc_iso(fm.utc), "time_known": fm.time_known, "title": fm.title,
+        "is_edit": fm.is_edit, "seq": fm.seq, "unknown_reason": fm.unknown_reason, "would_apply": would,
+    })
 
 
 # --- Sub-clips ---
@@ -491,6 +648,9 @@ def refresh_photos(resource_id):
     resource = Resource.query.get_or_404(resource_id)
     if not resource.captured_at:
         return jsonify({"error": "resource has no captured_at to search around"}), 400
+    if resource.captured_at_precision != "exact":
+        return jsonify({"error": "photo lookup needs an exact date and time; this one is "
+                                 f"{resource.captured_at_precision}"}), 400
 
     try:
         photos = fetch_photos_for_recording(
@@ -585,6 +745,9 @@ def refresh_location(resource_id):
     resource = Resource.query.get_or_404(resource_id)
     if not resource.captured_at:
         return jsonify({"error": "resource has no captured_at to search around"}), 400
+    if resource.captured_at_precision != "exact":
+        return jsonify({"error": "location lookup needs an exact date and time; this one is "
+                                 f"{resource.captured_at_precision}"}), 400
 
     try:
         track_points, pin = fetch_track_and_pin(

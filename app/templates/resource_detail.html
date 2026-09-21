@@ -263,12 +263,18 @@ function buildTagsSection(resource) {
 
 function buildCapturedAtSection(resource) {
   const section = el('section');
-  section.append(el('h2', {}, ['Captured at ', el('span', { class: 'badge unset' }, [resource.captured_at_source || 'manual'])]));
+  const info = resource.filename_info || {};
+  const precision = resource.captured_at ? (resource.captured_at_precision || 'exact') : 'unknown';
+  section.append(el('h2', {}, [
+    'Captured at ',
+    el('span', { class: 'badge unset' }, [resource.captured_at_source || 'manual']),
+    ' ',
+    el('span', { class: precision === 'exact' ? 'badge set' : 'badge unset' }, [precision]),
+  ]));
   const input = el('input', { type: 'datetime-local' });
   if (resource.captured_at) {
-    // captured_at is UTC ISO from the API -- render in the browser's
-    // local time for editing, matching what a person actually expects
-    // to type/see, then convert back to UTC ISO on save below.
+    // captured_at is a UTC instant ("...Z") from the API -- render it in the browser's
+    // local time for editing, then convert back to a UTC instant on save below.
     const d = new Date(resource.captured_at);
     const pad = n => String(n).padStart(2, '0');
     input.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -282,8 +288,47 @@ function buildCapturedAtSection(resource) {
     } catch (e) { alert('Error: ' + e.message); }
   });
   section.append(input);
-  if (!resource.captured_at) {
-    section.append(el('p', { class: 'hint' }, ['No trusted timestamp found in the file. Location enrichment can\'t run until this is set.']));
+
+  if (resource.captured_at) {
+    const select = el('select', {}, [
+      el('option', { value: 'exact' }, ['Exact time']),
+      el('option', { value: 'approximate' }, ['Approximate time']),
+    ]);
+    select.value = precision;
+    select.addEventListener('change', async () => {
+      try { renderDetail(await patchResource({ captured_at_precision: select.value })); }
+      catch (e) { alert('Error: ' + e.message); }
+    });
+    section.append(select);
+    if (precision !== 'exact') {
+      section.append(el('p', { class: 'hint' }, ['Approximate times are not looked up for a location or photos.']));
+    }
+  } else if (resource.suggested_captured_at) {
+    const d = new Date(resource.suggested_captured_at);
+    const when = info.time_known === false
+      ? d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })
+      : d.toLocaleString(undefined, { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const row = el('p', { class: 'hint' }, [
+      `The filename suggests ${when}` + (info.profile ? ` (${info.profile})` : '') +
+        (info.time_known === false ? ', with no time of day. ' : '. '),
+    ]);
+    const use = el('button', { type: 'button' }, ['Use this date']);
+    use.addEventListener('click', async () => {
+      try { renderDetail(await patchResource({ use_suggested_date: true })); }
+      catch (e) { alert('Error: ' + e.message); }
+    });
+    row.append(use);
+    section.append(row);
+  } else if (info.unknown_reason) {
+    section.append(el('p', { class: 'hint' }, ['Date unknown: ' + info.unknown_reason + '. Enter it above; location lookup waits for an exact date.']));
+  } else {
+    section.append(el('p', { class: 'hint' }, ['No date found. Location enrichment can\'t run until one is set.']));
+  }
+
+  if (info.title) {
+    section.append(el('p', { class: 'hint' }, [
+      `Description in the filename: \u201c${info.title}\u201d` + (info.is_edit ? ' (an edited version)' : ''),
+    ]));
   }
   return section;
 }

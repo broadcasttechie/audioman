@@ -1,0 +1,30 @@
+"""
+Idempotent schema upgrades. db.create_all() creates missing TABLES but never adds a
+column to an existing one, and there is no migration tool yet, so new columns on
+existing tables are added here. Every statement is safe to run on every start.
+(A proper reversible migration arrives with the Project/Session/File restructure.)
+"""
+from sqlalchemy import text
+
+ADD_COLUMNS = [
+    ("resources", "captured_at_precision", "VARCHAR DEFAULT 'unknown'"),
+    ("resources", "suggested_captured_at", "TIMESTAMP"),
+    ("resources", "filename_info", "JSON"),
+]
+
+
+def ensure_schema(db):
+    with db.engine.begin() as conn:
+        for table, column, ddl in ADD_COLUMNS:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}"))
+        # Rows that predate the precision column and already carry a date were entered or
+        # read as exact times. (Invariant kept everywhere else: a date implies exact or
+        # approximate, never unknown, so this cannot touch a deliberate choice.)
+        conn.execute(text(
+            "UPDATE resources SET captured_at_precision = 'exact' "
+            "WHERE captured_at IS NOT NULL AND (captured_at_precision IS NULL OR captured_at_precision = 'unknown')"
+        ))
+        conn.execute(text(
+            "UPDATE resources SET captured_at_precision = 'unknown' "
+            "WHERE captured_at IS NULL AND captured_at_precision IS NULL"
+        ))

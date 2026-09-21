@@ -103,6 +103,36 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
   has location 53.00816, -2.18121 (`dawarich-auto`, Stoke station) and a 13-point track.
 - **Not done from WP1:** the "Refresh location" button on the detail screen (the API works).
 
+## Built 2026-09-21: filename patterns + recorder profiles + date precision (work package 2)
+- **Recorder profiles** (`recorder_profiles` table, seeded from `jobs/filename_patterns.DEFAULT_PROFILES`,
+  editable via `GET/POST/PATCH /api/recorder-profiles`; patterns are grok-style `{YY}{MM}{DD}-{hh}{mm}{ss}{rest}`,
+  validated on save; each has an IANA timezone, a `clock_offset_seconds` (recorder clock minus true time),
+  a trust level and a priority). Eight defaults cover every real filename in `tests/fixtures/`:
+  Insta360 mic, Zoom, Zoom ZOOMnnnn, Zoom STE-nnn, two phone-recorder formats, "Date and title", phone memo
+  with no year. Matching ignores extensions (`.WAV.wav`) and Drive's "Copy of " prefix.
+- **The user's decision, implemented:** **Zoom and Insta360 are `trusted`** -> the filename date is applied at
+  ingest (`captured_at_source = filename`, precision exact) so location lookup runs at once; **every other
+  profile is `suggest`** -> the date is only stored as `suggested_captured_at` for the user to confirm.
+- **Unknown dates:** an Insta360 `audio_000101_...` name (year 2000, clock never set) gets no date, precision
+  `unknown`, and a stated reason. A year before 2010, a future date, or an impossible date is never applied.
+- **Precision** `captured_at_precision` = exact | approximate | unknown (unknown <=> no date). **Only exact is
+  looked up in Dawarich/Immich** (job queries and both manual refreshes enforce it). Changing a date, or
+  marking it approximate, clears the derived track/auto-location/photos and re-queues; a manual location is kept.
+- **Filename info** stored per resource: profile, description text (title suggestion), `is_edit` (a trailing
+  "-EDIT"), file counter (`seq`), the Inbox subfolder (the only context an `STE-000` has), unknown-date reason.
+- **API:** `PATCH {use_suggested_date: true}` confirms a suggestion (date-only names become approximate);
+  `POST /api/filename-preview {filename}` shows what ingest would do (nothing stored).
+- **UI:** the detail screen shows source + precision badges, an exact/approximate switch, the suggestion with a
+  "Use this date" button, the unknown-date reason, and the filename description; the queue labels
+  "(from filename)", "(approx.)" and pending suggestions. (JS syntax-checked and pages return 200; **not yet
+  clicked through in a browser.**)
+- **Schema:** no migration tool exists, so `app/schema.py::ensure_schema` adds columns idempotently at web and
+  worker start (and backfilled the existing dated resource to `exact`). **Deploy order: restart web first.**
+- Verified: 52 unit tests (every fixture filename has an expected result) + a 34-check live run (real
+  ingest, real Dawarich enrichment gating). Weak spot: "same-value PATCH doesn't reset" only asserts HTTP 200.
+- **Not built yet:** no UI for editing profiles (API only); no mtime suggestion (deliberately, see PLAN 18.5b);
+  multitrack/split grouping and using `is_edit`/`seq` (work packages 3-5); DST ambiguity flag.
+
 ## Work packages (proposed order; each ends with something checkable)
 Items marked **[app]** are backend work the Android app (PLAN §19) needs;
 they are scheduled here on purpose, early, and each also benefits the web UI.

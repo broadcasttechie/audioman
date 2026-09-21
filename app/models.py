@@ -42,9 +42,17 @@ class Resource(db.Model):
     format = db.Column(db.String)
     duration_seconds = db.Column(db.Float)
 
-    captured_at = db.Column(db.DateTime)
-    # embedded | dawarich-inferred | manual
+    captured_at = db.Column(db.DateTime)   # naive UTC (app/timeutil.py)
+    # filename | embedded | dawarich-inferred | manual
     captured_at_source = db.Column(db.String, default="embedded")
+    # exact | approximate | unknown. Invariant: unknown <=> captured_at is NULL. Only
+    # `exact` is looked up in Dawarich/Immich and pinned on the map (PLAN 18.5c).
+    captured_at_precision = db.Column(db.String, default="unknown")
+    # A date read from a filename by a "suggest" recorder profile, awaiting the user's
+    # confirmation (a "trusted" profile writes captured_at directly).
+    suggested_captured_at = db.Column(db.DateTime, nullable=True)
+    # What the filename told us: profile, title, is_edit, seq, unknown_reason, time_known, folder
+    filename_info = db.Column(db.JSON, nullable=True)
 
     # ambient | event | voice-personal | voice-project
     # Nullable: not inferable from the file itself — set during review.
@@ -90,6 +98,23 @@ class Resource(db.Model):
     clips = db.relationship("Clip", back_populates="resource", cascade="all, delete-orphan")
     photos = db.relationship("ResourcePhoto", back_populates="resource", cascade="all, delete-orphan")
     exports = db.relationship("Export", back_populates="resource", cascade="all, delete-orphan")
+
+
+class RecorderProfile(db.Model):
+    """How to read one recorder's filenames (see jobs/filename_patterns.py). Seeded from
+    DEFAULT_PROFILES and editable afterwards; lower priority number is tried first."""
+    __tablename__ = "recorder_profiles"
+
+    id = db.Column(db.String, primary_key=True, default=gen_uuid)
+    name = db.Column(db.String, unique=True, nullable=False)
+    patterns = db.Column(db.JSON, nullable=False, default=list)
+    timezone = db.Column(db.String, nullable=False, default="Europe/London")   # IANA
+    # recorder clock minus true time, in seconds (a recorder running 3 min fast = 180)
+    clock_offset_seconds = db.Column(db.Integer, nullable=False, default=0)
+    # trusted: a filename date is applied at ingest; suggest: it is only offered for confirmation
+    date_trust = db.Column(db.String, nullable=False, default="suggest")
+    priority = db.Column(db.Integer, nullable=False, default=100)
+    active = db.Column(db.Boolean, nullable=False, default=True)
 
 
 class Location(db.Model):

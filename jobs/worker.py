@@ -67,6 +67,8 @@ def run_forever():
     log.info("worker %s starting, jobs available: %s", worker_id, sorted(JOB_REGISTRY.keys()))
 
     with app.app_context():
+        from app.schema import ensure_schema
+        ensure_schema(db)  # the web service does this too; harmless if it already has
         while not _shutdown:
             try:
                 reaped = reap_stale_jobs()

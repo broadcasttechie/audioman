@@ -135,6 +135,13 @@ e.g. a `GET /api/needs-attention` that rolls these up, surfaced as a badge
 somewhere in the UI nav — rather than each one being its own silent trail.
 Not built; flagging so it doesn't get lost.
 
+## Schema changes (no migration tool yet)
+
+`db.create_all()` (in `run.py`) creates missing tables but never adds columns to an existing one, so
+`app/schema.py::ensure_schema` adds new columns with `ADD COLUMN IF NOT EXISTS` at web and worker start.
+**Restart the web service first** when deploying a change that adds columns, then the worker.
+A proper reversible migration arrives with the Project/Session/File restructure (NEXT.md package 3).
+
 ## NAS
 
 **Mounted and live (2026-09-21).** Synology ds124 (192.168.1.2), share

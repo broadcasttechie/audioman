@@ -64,6 +64,7 @@ def enrich_locations():
 
     candidates = Resource.query.filter(
         Resource.captured_at.isnot(None),
+        Resource.captured_at_precision == "exact",   # a fuzzy time must not be looked up (PLAN 18.5c)
         Resource.dawarich_checked_at.is_(None),
         Resource.status.in_(["pending-review", "filed"]),
     ).all()
@@ -109,6 +110,7 @@ def enrich_photos():
 
     candidates = Resource.query.filter(
         Resource.captured_at.isnot(None),
+        Resource.captured_at_precision == "exact",
         Resource.immich_checked_at.is_(None),
         Resource.status.in_(["pending-review", "filed"]),
     ).all()

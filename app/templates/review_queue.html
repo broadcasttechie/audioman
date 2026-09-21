@@ -34,13 +34,17 @@ function formatDuration(seconds) {
   return m + ':' + String(s).padStart(2, '0');
 }
 
-function formatCapturedAt(iso, source) {
+function formatCapturedAt(iso, source, precision) {
   if (!iso) return 'No timestamp';
   const d = new Date(iso);
   const formatted = d.toLocaleString(undefined, {
     day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
   });
-  return source === 'dawarich-inferred' ? formatted + ' (inferred)' : formatted;
+  let label = formatted;
+  if (precision === 'approximate') label += ' (approx.)';
+  if (source === 'dawarich-inferred') label += ' (inferred)';
+  if (source === 'filename') label += ' (from filename)';
+  return label;
 }
 
 async function loadQueue() {
@@ -84,7 +88,7 @@ async function loadQueue() {
       const meta = document.createElement('div');
       meta.className = 'card-meta';
       const capturedSpan = document.createElement('span');
-      capturedSpan.textContent = formatCapturedAt(res.captured_at, res.captured_at_source);
+      capturedSpan.textContent = res.captured_at ? formatCapturedAt(res.captured_at, res.captured_at_source, res.captured_at_precision) : (res.suggested_captured_at ? 'Date suggested from filename \u2014 confirm' : 'No timestamp');
       const iconsSpan = document.createElement('span');
       iconsSpan.className = 'card-icons';
       iconsSpan.textContent = icons.join(' ');
