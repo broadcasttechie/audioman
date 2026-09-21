@@ -48,7 +48,7 @@ def refile_all():
         return blocked
     moved, skipped = [], []
     for resource in Resource.query.filter_by(status="filed").all():
-        expected = render_path(resource, project=resource.project)
+        expected = render_path(resource, project=resource.project, session=resource.session)
         expected_full = os.path.join(Config.NAS_LIBRARY_ROOT, expected)
 
         if resource.nas_path != expected_full:
@@ -142,7 +142,7 @@ def retry_failed():
     for resource in Resource.query.filter_by(status="failed").all():
         try:
             if resource.failure_stage == "move":
-                expected = render_path(resource, project=resource.project)
+                expected = render_path(resource, project=resource.project, session=resource.session)
                 expected_full = os.path.join(Config.NAS_LIBRARY_ROOT, expected)
                 os.makedirs(os.path.dirname(expected_full), exist_ok=True)
                 os.rename(resource.nas_path, expected_full)

@@ -10,6 +10,14 @@ ADD_COLUMNS = [
     ("resources", "captured_at_precision", "VARCHAR DEFAULT 'unknown'"),
     ("resources", "suggested_captured_at", "TIMESTAMP"),
     ("resources", "filename_info", "JSON"),
+    ("resources", "session_id", "VARCHAR REFERENCES sessions(id)"),
+    ("resources", "role", "VARCHAR NOT NULL DEFAULT 'original'"),
+    ("resources", "derived_from_id", "VARCHAR REFERENCES resources(id)"),
+    ("resources", "track_label", "VARCHAR"),
+    ("resources", "notes", "TEXT"),
+    ("projects", "placement", "VARCHAR NOT NULL DEFAULT 'nas'"),
+    ("projects", "home", "VARCHAR NOT NULL DEFAULT 'nas'"),
+    ("projects", "created_at", "TIMESTAMP DEFAULT NOW()"),
 ]
 
 

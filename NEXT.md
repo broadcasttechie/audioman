@@ -133,6 +133,40 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
 - **Not built yet:** no UI for editing profiles (API only); no mtime suggestion (deliberately, see PLAN 18.5b);
   multitrack/split grouping and using `is_edit`/`seq` (work packages 3-5); DST ambiguity flag.
 
+## Built 2026-09-21: Project -> Session -> File (work package 3)
+No migration was needed (the user confirmed only test data exists), so the change is additive.
+- **Sessions** (`sessions` table, model `RecordingSession`): a night of a show or an outing. `project_id` is
+  nullable (a loose outing has none), `name` is the NAS folder name, optional `session_date`, `notes`. Unique per
+  project by folder name **compared case-insensitively after sanitising** ("a/b" and "a\\b" clash; SMB is
+  case-insensitive). `GET/POST /api/sessions`, `GET/PATCH/DELETE /api/sessions/<id>` (delete refused while it has
+  files); moving a session to another project moves its files' project with it; `GET /api/resources?session_id=`.
+- **Files** gained `session_id`, `role` (original|edit|export|sidecar|project-file), `derived_from_id` (edits point
+  at their original; self and loops refused; pointing at one makes the file an edit), `track_label`, `notes`.
+  **Rule: a file's project is its session's project.** Giving a session sets the project from it; a contradicting
+  project is refused; moving a file to another project takes it out of its old session.
+- **Projects:** `notes`, `placement` (nas|drive|both) and `home` (nas|drive) stored and validated (home must be
+  possible for the placement) but **not yet acted on** (package 9). Slug validated (`[a-z0-9-]`, it becomes a folder)
+  and **immutable**. **Client-supplied UUID `id` makes project and session creation idempotent** (the retry-safe
+  create the phone app will need).
+- **NAS paths:** `{project}/{session}/{filename}` and loose `misc/{category}/{year}/{month}/{session}/{filename}`
+  (the session folder is dropped when there is none; "unknown" for a missing date). Every folder part goes through
+  `safe_component` (no separators/reserved characters, no leading/trailing dots or spaces, never `..`); the
+  **original filename is never altered**. A filename clash in one folder is refused (409), never overwritten.
+- **UI:** the detail screen has a Session picker (sessions of the file's project), "+ New" (pre-filled with the
+  captured date, client-generated id), session notes, and file notes (saved on blur). (JS syntax-checked, page
+  serves 200; **not clicked through in a browser.**)
+- **Decision made by me, please confirm:** a loose recording in a session (an outing) gets that session's folder
+  under the month folder; a loose take with no session sits directly in the month folder.
+- **Safety change:** the nightly `audio-manager-refile-all.timer` is now **disabled** (unit file kept in
+  `deploy/systemd/`). Renaming a session or project changes the rendered path, and an unattended nightly move would
+  silently break Reaper projects, which reference audio by relative path. `refile-all` is now a deliberate manual run
+  (`POST /api/jobs/refile-all/run`); it refuses to overwrite and reports skips. Re-enable with
+  `systemctl enable --now audio-manager-refile-all.timer`.
+- Verified: 64 unit tests + a 46-check live run on the real NAS (filing paths, collisions, idempotent creates,
+  structure rules, edit chains). Test rows and NAS folders were removed afterwards.
+- **Not built:** a manage screen for projects/sessions (package 8); adopting DAW project files and moving a project
+  folder as a unit (package 5/9); split/multitrack grouping suggestions; the placement behaviour.
+
 ## Work packages (proposed order; each ends with something checkable)
 Items marked **[app]** are backend work the Android app (PLAN §19) needs;
 they are scheduled here on purpose, early, and each also benefits the web UI.

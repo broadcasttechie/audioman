@@ -57,6 +57,7 @@ const CATEGORIES = ["ambient", "event", "voice-personal", "voice-project"];
 let currentTags = [];   // [{id, name}]
 let allTags = [];       // [{id, name}] -- for datalist suggestions
 let allProjects = [];   // [{id, name, slug}]
+let allSessions = [];   // [{id, project_id, name, session_date, notes, file_count}]
 
 function formatDuration(seconds) {
   if (!seconds && seconds !== 0) return '';
@@ -90,12 +91,14 @@ async function patchResource(body) {
 async function loadDetail() {
   const container = document.getElementById('detail');
   try {
-    const [resource, projects, tags] = await Promise.all([
+    const [resource, projects, tags, sessions] = await Promise.all([
       fetch(`/api/resources/${resourceId}`).then(r => r.json()),
       fetch('/api/projects').then(r => r.json()),
       fetch('/api/tags').then(r => r.json()),
+      fetch('/api/sessions').then(r => r.json()),
     ]);
     allProjects = projects;
+    allSessions = sessions;
     allTags = tags;
     currentTags = tags.filter(t => resource.tags.includes(t.name));
     renderDetail(resource);
@@ -133,7 +136,9 @@ function renderDetail(resource) {
   if (resource.has_photos) container.append(buildPhotosSection());
   container.append(buildCategorySection(resource));
   container.append(buildProjectSection(resource));
+  container.append(buildSessionSection(resource));
   container.append(buildTagsSection(resource));
+  container.append(buildNotesSection(resource));
   container.append(buildClipsSection(resource));
 
   const fileBtn = el('button', {
@@ -212,6 +217,92 @@ function buildProjectSection(resource) {
   }, ['+ New']);
   row.append(nameInput, addBtn);
   section.append(row);
+  return section;
+}
+
+async function apiJson(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+// A session is one night of a show / one outing. It lives inside the file's project (or, with
+// no project, is a loose outing), so only the sessions of the current project are offered.
+function buildSessionSection(resource) {
+  const section = el('section');
+  section.append(el('h2', {}, ['Session']));
+  const here = allSessions.filter(s => (s.project_id || null) === (resource.project_id || null));
+  const select = el('select', {
+    onchange: async (ev) => {
+      try { renderDetail(await patchResource({ session_id: ev.target.value || null })); }
+      catch (e) { alert('Error: ' + e.message); }
+    },
+  });
+  select.append(el('option', { value: '' }, ['(none)']));
+  for (const s of here) {
+    const opt = el('option', { value: s.id }, [s.name]);
+    if (s.id === resource.session_id) opt.selected = true;
+    select.append(opt);
+  }
+  section.append(select);
+
+  const row = el('div', { class: 'row', style: 'margin-top:0.5rem' });
+  const nameInput = el('input', { type: 'text', placeholder: 'New session, e.g. 2026-09-15 Night 2' });
+  let dateOnly = null;
+  if (resource.captured_at) {
+    const d = new Date(resource.captured_at);
+    const pad = n => String(n).padStart(2, '0');
+    dateOnly = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    nameInput.value = dateOnly + ' ';
+  }
+  const addBtn = el('button', {
+    type: 'button',
+    onclick: async () => {
+      const name = nameInput.value.trim();
+      if (!name || name === dateOnly) return;
+      try {
+        const body = { name, project_id: resource.project_id || null, session_date: dateOnly };
+        if (window.crypto && crypto.randomUUID) body.id = crypto.randomUUID();  // a retried create can't duplicate
+        const created = await apiJson('POST', '/api/sessions', body);
+        allSessions.push(created);
+        renderDetail(await patchResource({ session_id: created.id }));
+      } catch (e) { alert('Error: ' + e.message); }
+    },
+  }, ['+ New']);
+  row.append(nameInput, addBtn);
+  section.append(row);
+
+  const current = allSessions.find(s => s.id === resource.session_id);
+  if (current) {
+    const notes = el('textarea', { rows: '3', placeholder: 'Notes about this session (venue, set-up, what happened)' });
+    notes.value = current.notes || '';
+    notes.addEventListener('blur', async () => {
+      if (notes.value === (current.notes || '')) return;
+      try { current.notes = (await apiJson('PATCH', `/api/sessions/${current.id}`, { notes: notes.value })).notes; }
+      catch (e) { alert('Error: ' + e.message); }
+    });
+    section.append(el('p', { class: 'hint' }, [`${current.file_count} file(s) in this session.`]), notes);
+  }
+  return section;
+}
+
+function buildNotesSection(resource) {
+  const section = el('section');
+  section.append(el('h2', {}, ['Notes']));
+  const notes = el('textarea', { rows: '4', placeholder: 'Anything worth remembering about this recording' });
+  notes.value = resource.notes || '';
+  notes.addEventListener('blur', async () => {
+    if (notes.value === (resource.notes || '')) return;
+    try { resource.notes = (await patchResource({ notes: notes.value })).notes; }
+    catch (e) { alert('Error: ' + e.message); }
+  });
+  section.append(notes);
+  if (resource.role && resource.role !== 'original') {
+    section.append(el('p', { class: 'hint' }, [
+      `This file is an ${resource.role}` + (resource.derived_from_id ? ' of another file in the library.' : '.'),
+    ]));
+  }
   return section;
 }
 

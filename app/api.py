@@ -1,10 +1,13 @@
 from flask import Blueprint, jsonify, request, send_file, abort
 import os
+import re
+import uuid
+from datetime import date
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from .extensions import db
-from .models import Resource, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint, RecorderProfile
+from .models import Resource, RecordingSession, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint, RecorderProfile
 from .settings import get_config, set_config, settings_snapshot, SECRET_KEYS
 from config import Config
 from .timeutil import parse_to_utc_naive, to_utc_iso
@@ -43,6 +46,11 @@ def list_resources():
     if category:
         query = query.filter(Resource.category == category)
 
+    session_id = request.args.get("session_id")
+    if session_id == "none":
+        query = query.filter(Resource.session_id.is_(None))
+    elif session_id:
+        query = query.filter(Resource.session_id == session_id)
     project_id = request.args.get("project_id")
     if project_id == "none":
         query = query.filter(Resource.project_id.is_(None))
@@ -142,10 +150,19 @@ def update_resource(resource_id):
             return jsonify({"error": f"unknown tag id(s): {unknown}"}), 400
         tags_to_set = [found[t] for t in wanted]
 
+    structure = _resolve_structure(r, data)
+    if isinstance(structure, tuple) and len(structure) == 2 and hasattr(structure[0], "status_code"):
+        return structure  # (error response, status)
+
     old_date, old_precision = r.captured_at, r.captured_at_precision
-    for field in ("category", "project_id", "captured_at_source"):
+    for field in ("category", "captured_at_source"):
         if field in data:
             setattr(r, field, data[field])
+    if structure:
+        r.session_id, r.project_id = structure["session_id"], structure["project_id"]
+        for field in ("role", "derived_from_id", "notes", "track_label"):
+            if field in structure:
+                setattr(r, field, structure[field])
 
     if "captured_at" in data:
         r.captured_at = data["captured_at"]
@@ -199,6 +216,73 @@ def update_resource(resource_id):
     return jsonify(_resource_to_dict(r))
 
 
+ROLES = ("original", "edit", "export", "sidecar", "project-file")
+
+
+def _resolve_structure(r, data):
+    """
+    Validate the project / session / role / notes part of a PATCH. Returns None if the request
+    doesn't touch them, a dict of values to apply, or (error_response, status).
+
+    Rules: a file's project is always its session's project; giving a session sets the project
+    from it (and a project that contradicts the session is refused); moving a file to another
+    project takes it out of its old session; an edit points at an existing, different file and
+    the chain can't loop.
+    """
+    keys = ("session_id", "project_id", "role", "derived_from_id", "notes", "track_label")
+    if not any(k in data for k in keys):
+        return None
+    out = {}
+
+    session_id, project_id = r.session_id, r.project_id
+    if "project_id" in data and data["project_id"] is not None and db.session.get(Project, data["project_id"]) is None:
+        return jsonify({"error": "unknown project"}), 400
+
+    if data.get("session_id") is not None:
+        session = db.session.get(RecordingSession, data["session_id"])
+        if session is None:
+            return jsonify({"error": "unknown session"}), 400
+        if "project_id" in data and data["project_id"] != session.project_id:
+            return jsonify({"error": "that session belongs to a different project; change the session "
+                                     "or clear it when moving the file to another project"}), 400
+        session_id, project_id = session.id, session.project_id
+    else:
+        if "session_id" in data:              # explicitly cleared
+            session_id = None
+        if "project_id" in data:
+            project_id = data["project_id"]
+            if session_id is not None and r.session.project_id != project_id:
+                session_id = None             # moved to another project: leave the old session
+    out["session_id"], out["project_id"] = session_id, project_id
+
+    if "role" in data:
+        if data["role"] not in ROLES:
+            return jsonify({"error": f"role must be one of {list(ROLES)}"}), 400
+        out["role"] = data["role"]
+    if "derived_from_id" in data:
+        target = data["derived_from_id"]
+        if target is not None:
+            if target == r.id:
+                return jsonify({"error": "a file can't be an edit of itself"}), 400
+            seen, cursor = {r.id}, db.session.get(Resource, target)
+            if cursor is None:
+                return jsonify({"error": "unknown file for derived_from_id"}), 400
+            while cursor is not None:  # no loops: walk up the chain from the proposed original
+                if cursor.id in seen:
+                    return jsonify({"error": "that would make the edits form a loop"}), 400
+                seen.add(cursor.id)
+                cursor = cursor.derived_from
+            if data.get("role", r.role) == "original":
+                out["role"] = "edit"  # pointing at an original makes this an edit of it
+        out["derived_from_id"] = target
+    for field in ("notes", "track_label"):
+        if field in data:
+            if data[field] is not None and not isinstance(data[field], str):
+                return jsonify({"error": f"{field} must be text"}), 400
+            out[field] = data[field]
+    return out
+
+
 def _clear_derived_by_time(resource):
     TrackPoint.query.filter_by(resource_id=resource.id).delete(synchronize_session=False)
     ResourcePhoto.query.filter_by(resource_id=resource.id).delete(synchronize_session=False)
@@ -223,7 +307,7 @@ def _file_resource(resource):
             f"staging file missing for resource {resource.id}: {resource.staging_path}"
         )
 
-    relative_path = render_path(resource, project=resource.project)
+    relative_path = render_path(resource, project=resource.project, session=resource.session)
     destination = os.path.join(Config.NAS_LIBRARY_ROOT, relative_path)
 
     # Staging and the NAS are different filesystems, so this is copy ->
@@ -242,6 +326,12 @@ def _resource_to_dict(r: Resource):
         "filename": r.filename,
         "category": r.category,
         "project_id": r.project_id,
+        "session_id": r.session_id,
+        "session": {"id": r.session.id, "name": r.session.name} if r.session else None,
+        "role": r.role or "original",
+        "derived_from_id": r.derived_from_id,
+        "track_label": r.track_label,
+        "notes": r.notes,
         "status": r.status,
         "captured_at": to_utc_iso(r.captured_at),
         "captured_at_source": r.captured_at_source,
@@ -826,22 +916,241 @@ def upload_audio():
 
 # --- Projects / Tags (simple CRUD) ---
 
+PLACEMENTS = ("nas", "drive", "both")
+HOMES = ("nas", "drive")
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def _valid_uuid(value):
+    try:
+        return str(uuid.UUID(str(value))) == str(value).lower()
+    except (ValueError, AttributeError):
+        return False
+
+
+def _project_to_dict(p):
+    return {"id": p.id, "name": p.name, "slug": p.slug, "notes": p.notes,
+            "placement": p.placement, "home": p.home, "created_at": to_utc_iso(p.created_at)}
+
+
+def _placement_error(placement, home):
+    if placement not in PLACEMENTS:
+        return f"placement must be one of {list(PLACEMENTS)}"
+    if home not in HOMES:
+        return f"home must be one of {list(HOMES)}"
+    if (placement == "nas" and home != "nas") or (placement == "drive" and home != "drive"):
+        return f"home '{home}' isn't possible with placement '{placement}'"
+    return None
+
+
 @bp.get("/projects")
 def list_projects():
-    return jsonify([{"id": p.id, "name": p.name, "slug": p.slug} for p in Project.query.all()])
+    return jsonify([_project_to_dict(p) for p in Project.query.order_by(Project.name).all()])
 
 
 @bp.post("/projects")
 def create_project():
-    data = request.get_json()
-    p = Project(name=data["name"], slug=data["slug"], notes=data.get("notes"))
+    """
+    Idempotent when the client supplies its own UUID `id` (an offline app retrying a create):
+    posting the same id again returns the existing project instead of making another.
+    """
+    data = request.get_json() or {}
+    name = data.get("name")
+    slug = data.get("slug")
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({"error": "name is required"}), 400
+    if not isinstance(slug, str) or not SLUG_RE.match(slug):
+        return jsonify({"error": "slug must be lowercase letters, digits and hyphens (it becomes the NAS folder name)"}), 400
+    placement, home = data.get("placement", "nas"), data.get("home", "nas")
+    error = _placement_error(placement, home)
+    if error:
+        return jsonify({"error": error}), 400
+
+    new_id = data.get("id")
+    if new_id is not None:
+        if not _valid_uuid(new_id):
+            return jsonify({"error": "id must be a UUID"}), 400
+        existing = db.session.get(Project, new_id)
+        if existing:
+            return jsonify(_project_to_dict(existing)), 200
+
+    p = Project(name=name.strip(), slug=slug, notes=data.get("notes"), placement=placement, home=home)
+    if new_id is not None:
+        p.id = new_id
     db.session.add(p)
     try:
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        return jsonify({"error": f"slug '{data['slug']}' is already in use"}), 400
-    return jsonify({"id": p.id}), 201
+        return jsonify({"error": f"slug '{slug}' is already in use"}), 400
+    return jsonify(_project_to_dict(p)), 201
+
+
+@bp.get("/projects/<project_id>")
+def get_project(project_id):
+    p = Project.query.get_or_404(project_id)
+    d = _project_to_dict(p)
+    d["sessions"] = [_session_to_dict(s) for s in
+                     RecordingSession.query.filter_by(project_id=p.id).order_by(RecordingSession.session_date, RecordingSession.name)]
+    return jsonify(d)
+
+
+@bp.patch("/projects/<project_id>")
+def update_project(project_id):
+    p = Project.query.get_or_404(project_id)
+    data = request.get_json() or {}
+    if "slug" in data and data["slug"] != p.slug:
+        return jsonify({"error": "the slug is the NAS folder name and can't be changed"}), 400
+    if "name" in data:
+        if not isinstance(data["name"], str) or not data["name"].strip():
+            return jsonify({"error": "name can't be empty"}), 400
+        p.name = data["name"].strip()
+    if "notes" in data:
+        if data["notes"] is not None and not isinstance(data["notes"], str):
+            return jsonify({"error": "notes must be text"}), 400
+        p.notes = data["notes"]
+    if "placement" in data or "home" in data:
+        placement, home = data.get("placement", p.placement), data.get("home", p.home)
+        error = _placement_error(placement, home)
+        if error:
+            return jsonify({"error": error}), 400
+        p.placement, p.home = placement, home
+    db.session.commit()
+    return jsonify(_project_to_dict(p))
+
+
+# --- Sessions: one night of a show / one outing (PLAN 18.1) ---
+
+def _session_to_dict(s, file_count=None):
+    if file_count is None:
+        file_count = Resource.query.filter_by(session_id=s.id).count()
+    return {"id": s.id, "project_id": s.project_id, "name": s.name,
+            "session_date": s.session_date.isoformat() if s.session_date else None,
+            "notes": s.notes, "file_count": file_count, "created_at": to_utc_iso(s.created_at)}
+
+
+def _session_folder_taken(project_id, name, exclude_id=None):
+    """Two names that end up as the same NAS folder (case-insensitively, as SMB does) clash."""
+    from jobs.path_template import safe_component
+    wanted = safe_component(name).lower()
+    query = RecordingSession.query.filter(RecordingSession.project_id.is_(None) if project_id is None
+                                          else RecordingSession.project_id == project_id)
+    return any(safe_component(s.name).lower() == wanted for s in query if s.id != exclude_id)
+
+
+def _parse_session_date(value):
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        raise ValueError("session_date must be YYYY-MM-DD")
+
+
+@bp.get("/sessions")
+def list_sessions():
+    query = RecordingSession.query
+    project_id = request.args.get("project_id")
+    if project_id == "none":
+        query = query.filter(RecordingSession.project_id.is_(None))
+    elif project_id:
+        query = query.filter(RecordingSession.project_id == project_id)
+    counts = dict(db.session.query(Resource.session_id, db.func.count(Resource.id))
+                  .filter(Resource.session_id.isnot(None)).group_by(Resource.session_id).all())
+    rows = query.order_by(RecordingSession.session_date.desc().nullslast(), RecordingSession.name).all()
+    return jsonify([_session_to_dict(s, counts.get(s.id, 0)) for s in rows])
+
+
+@bp.post("/sessions")
+def create_session():
+    """Idempotent by client-supplied UUID `id`, like projects. Without an id, a name that would
+    collide with a sibling folder is refused (409)."""
+    data = request.get_json() or {}
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({"error": "name is required"}), 400
+    project_id = data.get("project_id")
+    if project_id is not None and db.session.get(Project, project_id) is None:
+        return jsonify({"error": "unknown project"}), 400
+    try:
+        session_date = _parse_session_date(data.get("session_date"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if data.get("notes") is not None and not isinstance(data["notes"], str):
+        return jsonify({"error": "notes must be text"}), 400
+
+    new_id = data.get("id")
+    if new_id is not None:
+        if not _valid_uuid(new_id):
+            return jsonify({"error": "id must be a UUID"}), 400
+        existing = db.session.get(RecordingSession, new_id)
+        if existing:
+            return jsonify(_session_to_dict(existing)), 200
+    if _session_folder_taken(project_id, name):
+        return jsonify({"error": "a session with that folder name already exists in this project"}), 409
+
+    s = RecordingSession(name=name.strip(), project_id=project_id, session_date=session_date, notes=data.get("notes"))
+    if new_id is not None:
+        s.id = new_id
+    db.session.add(s)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "a session with that name already exists in this project"}), 409
+    return jsonify(_session_to_dict(s, 0)), 201
+
+
+@bp.get("/sessions/<session_id>")
+def get_session(session_id):
+    s = RecordingSession.query.get_or_404(session_id)
+    d = _session_to_dict(s)
+    files = Resource.query.filter_by(session_id=s.id).order_by(Resource.captured_at, Resource.filename).all()
+    d["files"] = [{"id": f.id, "filename": f.filename, "role": f.role or "original", "track_label": f.track_label,
+                   "status": f.status, "duration_seconds": f.duration_seconds,
+                   "captured_at": to_utc_iso(f.captured_at)} for f in files]
+    return jsonify(d)
+
+
+@bp.patch("/sessions/<session_id>")
+def update_session(session_id):
+    s = RecordingSession.query.get_or_404(session_id)
+    data = request.get_json() or {}
+    new_project = data["project_id"] if "project_id" in data else s.project_id
+    new_name = data["name"].strip() if isinstance(data.get("name"), str) else s.name
+    if "name" in data and (not isinstance(data["name"], str) or not data["name"].strip()):
+        return jsonify({"error": "name can't be empty"}), 400
+    if "project_id" in data and new_project is not None and db.session.get(Project, new_project) is None:
+        return jsonify({"error": "unknown project"}), 400
+    if (("name" in data or "project_id" in data)
+            and _session_folder_taken(new_project, new_name, exclude_id=s.id)):
+        return jsonify({"error": "a session with that folder name already exists in the target project"}), 409
+    if "session_date" in data:
+        try:
+            s.session_date = _parse_session_date(data["session_date"])
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    if "notes" in data:
+        if data["notes"] is not None and not isinstance(data["notes"], str):
+            return jsonify({"error": "notes must be text"}), 400
+        s.notes = data["notes"]
+    s.name = new_name
+    if "project_id" in data and new_project != s.project_id:
+        s.project_id = new_project
+        # A file's project is its session's project: move the files along with it.
+        Resource.query.filter_by(session_id=s.id).update({"project_id": new_project}, synchronize_session=False)
+    db.session.commit()
+    return jsonify(_session_to_dict(s))
+
+
+@bp.delete("/sessions/<session_id>")
+def delete_session(session_id):
+    s = RecordingSession.query.get_or_404(session_id)
+    if Resource.query.filter_by(session_id=s.id).count():
+        return jsonify({"error": "this session still has files; move them out first"}), 409
+    db.session.delete(s)
+    db.session.commit()
+    return "", 204
 
 
 @bp.get("/categories")

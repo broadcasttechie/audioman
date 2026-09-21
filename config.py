@@ -60,8 +60,11 @@ class Config:
     # --- Folder pattern (Pattern C) ---
     # Rendered against a dict of: project, category, year, filename
     # Falls back to the second template when `project` is None/empty.
-    PATH_TEMPLATE_WITH_PROJECT = "{project}/{filename}"
-    PATH_TEMPLATE_NO_PROJECT = "misc/{category}/{year}/{filename}"
+    # Fields: project (slug), category, year, month (01-12), session, filename. {year}/{month} are
+    # "unknown" when there is no date. A missing {session} drops its folder, empty path parts are
+    # removed, and every part is made filesystem-safe (jobs/path_template.py).
+    PATH_TEMPLATE_WITH_PROJECT = "{project}/{session}/{filename}"
+    PATH_TEMPLATE_NO_PROJECT = "misc/{category}/{year}/{month}/{session}/{filename}"
 
     # --- Categories (fixed enum) ---
     CATEGORIES = ["ambient", "event", "voice-personal", "voice-project"]

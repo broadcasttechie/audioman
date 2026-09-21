@@ -135,6 +135,13 @@ e.g. a `GET /api/needs-attention` that rolls these up, surfaced as a badge
 somewhere in the UI nav — rather than each one being its own silent trail.
 Not built; flagging so it doesn't get lost.
 
+## refile-all is manual-only
+
+`audio-manager-refile-all.timer` is **deliberately disabled** (2026-09-21). Renaming a session or project changes
+the path a file should have, and re-filing unattended overnight would move audio that a Reaper/Audition project
+refers to by relative path. Run it on purpose with `POST /api/jobs/refile-all/run`. The unit files remain in
+`deploy/systemd/`; re-enable with `systemctl enable --now audio-manager-refile-all.timer`.
+
 ## Schema changes (no migration tool yet)
 
 `db.create_all()` (in `run.py`) creates missing tables but never adds columns to an existing one, so

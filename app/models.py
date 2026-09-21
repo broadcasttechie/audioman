@@ -13,10 +13,38 @@ class Project(db.Model):
 
     id = db.Column(db.String, primary_key=True, default=gen_uuid)
     name = db.Column(db.String, nullable=False)
-    slug = db.Column(db.String, unique=True, nullable=False)
+    slug = db.Column(db.String, unique=True, nullable=False)   # the NAS folder name; never changed after filing
     notes = db.Column(db.Text)
+    # Where copies live and where the project is edited (PLAN 18.5j/k). Stored now, acted on by the
+    # placement work (NEXT.md package 9): nas | drive | both, and nas | drive.
+    placement = db.Column(db.String, nullable=False, default="nas")
+    home = db.Column(db.String, nullable=False, default="nas")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     resources = db.relationship("Resource", back_populates="project")
+    sessions = db.relationship("RecordingSession", back_populates="project")
+
+
+class RecordingSession(db.Model):
+    """
+    One night of a show, or one outing: what is reviewed, dated, located and filed as a unit
+    (PLAN 18.1). A session normally belongs to a project; it may have none (an outing of loose
+    field takes). `name` is the NAS folder name, so it is sanitised when a path is built.
+    Named RecordingSession so it can't be confused with db.session or Flask's session.
+    """
+    __tablename__ = "sessions"
+    __table_args__ = (db.UniqueConstraint("project_id", "name", name="uq_session_project_name"),)
+
+    id = db.Column(db.String, primary_key=True, default=gen_uuid)   # may be chosen by a client (idempotent create)
+    project_id = db.Column(db.String, db.ForeignKey("projects.id"), nullable=True)
+    name = db.Column(db.String, nullable=False)
+    session_date = db.Column(db.Date, nullable=True)   # the local calendar date, for sorting/display
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = db.relationship("Project", back_populates="sessions")
+    resources = db.relationship("Resource", back_populates="session")
 
 
 class Tag(db.Model):
@@ -60,6 +88,18 @@ class Resource(db.Model):
 
     project_id = db.Column(db.String, db.ForeignKey("projects.id"), nullable=True)
     project = db.relationship("Project", back_populates="resources")
+    # A file's project is always its session's project (kept consistent by the API).
+    session_id = db.Column(db.String, db.ForeignKey("sessions.id"), nullable=True)
+    session = db.relationship("RecordingSession", back_populates="resources")
+
+    # original | edit | export | sidecar | project-file (PLAN 18.1). An edit is a version of the
+    # same recording (cleaned up / trimmed) and points at its original; segments belong to one
+    # file, never shared across versions.
+    role = db.Column(db.String, nullable=False, default="original")
+    derived_from_id = db.Column(db.String, db.ForeignKey("resources.id"), nullable=True)
+    track_label = db.Column(db.String, nullable=True)   # e.g. one mono track of a multitrack take
+    notes = db.Column(db.Text)
+    derived_from = db.relationship("Resource", remote_side="Resource.id", backref="edits")
 
     # pending-review | filed | archived | failed
     status = db.Column(db.String, default="pending-review", index=True)
