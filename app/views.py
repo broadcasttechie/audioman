@@ -7,7 +7,17 @@ ui_bp = Blueprint("ui", __name__)
 
 @ui_bp.get("/")
 def index():
-    return redirect(url_for("ui.review_queue"))
+    return render_template("home.html", active_tab="home")
+
+
+@ui_bp.get("/manage")
+def manage():
+    return render_template("manage.html", active_tab="manage")
+
+
+@ui_bp.get("/reclaim")
+def reclaim():
+    return render_template("reclaim.html", active_tab="settings")
 
 
 @ui_bp.get("/review")

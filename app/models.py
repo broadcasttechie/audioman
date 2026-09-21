@@ -164,6 +164,22 @@ class RecorderProfile(db.Model):
     active = db.Column(db.Boolean, nullable=False, default=True)
 
 
+class Category(db.Model):
+    """
+    A high-level kind of recording (Field recordings, Event, Voice...). Configurable data, not a fixed list:
+    the user isn't yet sure what categories they want. `slug` is the NAS folder name for loose files
+    (misc/<slug>/...) and never changes once created; `label` is what people see and can be renamed freely.
+    Categories are archived rather than deleted (files keep theirs) and can be merged into another.
+    """
+    __tablename__ = "categories"
+
+    slug = db.Column(db.String, primary_key=True)
+    label = db.Column(db.String, nullable=False)
+    archived = db.Column(db.Boolean, nullable=False, default=False)
+    sort_order = db.Column(db.Integer, nullable=False, default=100)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class Location(db.Model):
     __tablename__ = "locations"
 

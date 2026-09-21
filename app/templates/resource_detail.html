@@ -60,7 +60,7 @@
 {% block scripts %}
 <script>
 const resourceId = {{ resource_id | tojson }};
-const CATEGORIES = ["ambient", "event", "voice-personal", "voice-project"];
+let allCategories = [];  // [{slug, label}] from /api/categories: configurable, not a fixed list
 let currentTags = [];   // [{id, name}]
 let allTags = [];       // [{id, name}] -- for datalist suggestions
 let allProjects = [];   // [{id, name, slug}]
@@ -98,12 +98,14 @@ async function patchResource(body) {
 async function loadDetail() {
   const container = document.getElementById('detail');
   try {
-    const [resource, projects, tags, sessions] = await Promise.all([
+    const [resource, projects, tags, sessions, categories] = await Promise.all([
       fetch(`/api/resources/${resourceId}`).then(r => r.json()),
       fetch('/api/projects').then(r => r.json()),
       fetch('/api/tags').then(r => r.json()),
       fetch('/api/sessions').then(r => r.json()),
+      fetch('/api/categories').then(r => r.json()),
     ]);
+    allCategories = categories;
     allProjects = projects;
     allSessions = sessions;
     allTags = tags;
@@ -166,17 +168,20 @@ function buildCategorySection(resource) {
   const section = el('section');
   section.append(el('h2', {}, ['Category']));
   const group = el('div', { class: 'btn-group' });
-  for (const cat of CATEGORIES) {
+  // A file may still carry an archived category: show it (selected) even though it isn't offered for new use.
+  const offered = allCategories.slice();
+  if (resource.category && !offered.some(c => c.slug === resource.category)) offered.push({ slug: resource.category, label: resource.category });
+  for (const cat of offered) {
     const btn = el('button', {
       type: 'button',
-      class: cat === resource.category ? 'selected' : '',
+      class: cat.slug === resource.category ? 'selected' : '',
       onclick: async () => {
         try {
-          const updated = await patchResource({ category: cat });
+          const updated = await patchResource({ category: cat.slug });
           renderDetail(updated);
         } catch (e) { alert('Error: ' + e.message); }
       },
-    }, [cat]);
+    }, [cat.label]);
     group.append(btn);
   }
   section.append(group);

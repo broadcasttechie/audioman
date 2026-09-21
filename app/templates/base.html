@@ -67,8 +67,10 @@
 </head>
 <body>
 <nav class="tabbar">
+  <a href="/" class="{{ 'active' if active_tab == 'home' else '' }}"><span class="icon">🏠</span>Home</a>
   <a href="/review" class="{{ 'active' if active_tab == 'review' else '' }}"><span class="icon">🎧</span>Review</a>
   <a href="/library" class="{{ 'active' if active_tab == 'library' else '' }}"><span class="icon">📚</span>Library</a>
+  <a href="/manage" class="{{ 'active' if active_tab == 'manage' else '' }}"><span class="icon">🗂️</span>Manage</a>
   <a href="/settings" class="{{ 'active' if active_tab == 'settings' else '' }}"><span class="icon">⚙️</span>Settings</a>
 </nav>
 <div class="container">

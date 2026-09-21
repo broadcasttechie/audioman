@@ -67,7 +67,12 @@ class Config:
     PATH_TEMPLATE_NO_PROJECT = "misc/{category}/{year}/{month}/{session}/{filename}"
 
     # --- Categories (fixed enum) ---
+    # Seeds for the `categories` table (app/categories.py); after that the table is the source of truth
+    # and these are only used to fill it the first time. Slugs are folder names and never change; the
+    # labels are what the user sees ("ambient" is a field recording).
     CATEGORIES = ["ambient", "event", "voice-personal", "voice-project"]
+    CATEGORY_LABELS = {"ambient": "Field recordings", "event": "Event",
+                       "voice-personal": "Voice (personal)", "voice-project": "Voice (project)"}
 
     # --- Dawarich integration ---
     DAWARICH_API_URL = os.environ.get("DAWARICH_API_URL", "")

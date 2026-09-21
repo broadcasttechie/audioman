@@ -236,6 +236,47 @@ No migration was needed (the user confirmed only test data exists), so the chang
   16-check live run through the real worker (`tests/live/live_previews.py`).
 - **Not built yet from package 6:** the reclaimable-space view.
 
+## Built 2026-09-21: Manage, Home, configurable categories, reclaimable space (work packages 8 + 6 second half)
+- **Categories are data now** (`categories` table, seeded from `Config.CATEGORIES`; `ambient` is labelled **Field
+  recordings**). `slug` = the NAS folder name, fixed once created; `label` renameable; archive (hidden from pickers,
+  kept on existing files, can't be given to new ones) and **merge** (moves the files' category, archives the source;
+  files already on the NAS stay put until a deliberate `refile-all`). `GET/POST/PATCH /api/categories`, `POST
+  .../merge`. The detail screen no longer has its own hard-coded list.
+- **Tags:** usage counts, rename (a clash with an existing name, any case, is refused and names the tag to merge
+  into), merge (no duplicates for files that already have both), delete (refused while in use unless `?force=1`).
+- **Manage screen** (`/manage`, new tab): Projects (name, notes, placement/home, sessions with name + notes),
+  Tags, Categories. **Home** (`/`, new first tab, `GET /api/overview`): counts (to review / being copied / failed /
+  library size), categories, recent projects, recently filed, and a health strip (NAS down, background-job errors
+  from the last two days). Nav is now five tabs. Shared helpers in `app/static/app.js`.
+- **Reclaimable Drive space** (`/reclaim`, linked from Settings and Home; `GET /api/reclaimable`): lists the originals
+  in `Inbox/_processed` whose NAS copy exists (checked file by file), largest first, with a total and one-click copy
+  of the Drive paths; `?check_drive=1` asks Drive which are still there. **The list stays hidden until the user ticks
+  "I back up the NAS share myself"** (the backup is theirs, outside the app); refuses (503) when the NAS is down.
+  Verified against the real Drive: the test file is still there.
+- **Not clicked through in a browser:** Home, Manage, Reclaim, review-queue batch bar, detail waveform. JS syntax-checked;
+  all pages serve; every API behind them is covered by the live checks.
+
+## Fixed 2026-09-21 (found by a regression run and by looking at Home)
+- **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
+- **Stranded queue rows:** a worker restarted mid-job left its row `running`, which blocked new runs of that job for
+  an hour (one active row per job name). `requeue_dead_local_jobs()` runs at worker start and re-queues rows locked by
+  a process on this host that no longer exists (not counted as a failure); live and other-host rows are untouched.
+- **Secrets in error messages:** `requests` puts the full URL in its exception text and Dawarich takes its key as a
+  query parameter, so an error message could carry the key into `file_events`/the UI. `jobs/retry.scrub()` now strips
+  key-like parameters before any message is raised, and 4xx replies become `ServiceRejected("HTTP 400 from
+  https://host: <reason>")` (a `ServiceUnavailable` subclass) instead of an unhandled 500. **One stored `file_events` row
+  contained a key-like parameter; its value was replaced with `***`** (counted, never printed). It never left the
+  server, but if you want to be thorough, rotate the Dawarich API key.
+- **Immich was misconfigured:** its URL was `http://192.168.1.186:2283`, which nginx rejects ("plain HTTP request sent to
+  HTTPS port"), so every photo lookup since 18 Sept failed. Changed to `https://immich.home.zamia.co.uk` (resolves to the
+  same host, answers `/api/server/ping`, and an authenticated search returns 200). Photo refresh now works (none found
+  for the test file's time). **This is a setting the user had entered; revert on the Settings page if wrong.**
+- **`nas-to-drive-library` timer disabled** (it can never succeed: a service account has no Drive quota; see PLAN 18.5k),
+  and the guard marker is now excluded from any future sync/check. Re-enable with
+  `systemctl enable --now audio-manager-nas-to-drive-library.timer` once the Drive-copy design (package 9) is done.
+- Tests: 93 unit tests; 11 live checks (`tests/live/`, README) all green. The NAS-guard test now restores the job
+  status it provokes, so it can't leave false errors on Home.
+
 ## Work packages (proposed order; each ends with something checkable)
 Items marked **[app]** are backend work the Android app (PLAN §19) needs;
 they are scheduled here on purpose, early, and each also benefits the web UI.

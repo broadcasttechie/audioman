@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Free up Drive space{% endblock %}
+{% block head %}
+<style>
+  .box { border: 1px solid #8884; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 1rem; }
+  .big { font-size: 1.6rem; font-weight: 700; }
+  .warn { border-color: #c90; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  td, th { text-align: left; padding: 0.35rem 0.3rem; border-bottom: 1px solid #8882; vertical-align: top; }
+  td.size { white-space: nowrap; text-align: right; }
+  td.path { word-break: break-all; opacity: 0.85; }
+  .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.6rem 0; }
+</style>
+{% endblock %}
+{% block content %}
+<a class="back-link" href="/settings">&larr; Settings</a>
+<h1>Free up Google Drive space</h1>
+<div id="body" class="status">Loading...</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/app.js"></script>
+<script>
+async function load(check) {
+  const body = document.getElementById('body');
+  try {
+    const d = await apiJson('GET', '/api/reclaimable' + (check ? '?check_drive=1' : ''));
+    render(d);
+  } catch (e) { body.textContent = 'Error: ' + e.message + (e.data && e.data.detail ? ' (' + e.data.detail + ')' : ''); body.className = 'status err'; }
+}
+
+function render(d) {
+  const body = document.getElementById('body');
+  body.className = ''; body.replaceChildren();
+  body.append(el('div', { class: 'box' }, [
+    el('div', { class: 'big' }, [formatBytes(d.total_bytes)]),
+    `${d.count} original${d.count === 1 ? '' : 's'} in Drive's Inbox/_processed ${d.count === 1 ? 'is' : 'are'} already filed on the NAS, checked file by file. ` +
+    'This app cannot delete them itself (your Google account only lets it move files), so they keep using your Drive space until you delete them.',
+  ]));
+
+  if (!d.acknowledged) {
+    const cb = el('input', { type: 'checkbox', id: 'ack' });
+    body.append(el('div', { class: 'box warn' }, [
+      el('strong', {}, ['Before you delete anything']),
+      el('p', {}, ['Once these are deleted from Drive, the NAS holds the only copy. This app does not back up the NAS; that is yours to do. The list stays hidden until you confirm.']),
+      el('label', {}, [cb, ' I back up the NAS share (Audio) myself, outside this app.']),
+      el('div', { class: 'actions' }, [el('button', { type: 'button', onclick: async () => {
+        if (!cb.checked) return alert('Tick the box to confirm.');
+        await apiJson('PUT', '/api/reclaimable/ack', { acknowledged: true }); load(false);
+      } }, ['Show the list'])]),
+    ]));
+    return;
+  }
+
+  body.append(el('div', { class: 'actions' }, [
+    el('button', { type: 'button', onclick: () => load(true) }, ['Check which are still in Drive']),
+    el('button', { type: 'button', onclick: async () => { await navigator.clipboard.writeText(d.items.map(i => i.drive_path).join('\n')); alert('Copied ' + d.items.length + ' paths.'); } }, ['Copy all paths']),
+    el('button', { type: 'button', onclick: async () => { await apiJson('PUT', '/api/reclaimable/ack', { acknowledged: false }); load(false); } }, ['Hide the list again']),
+  ]));
+  if (d.drive_checked) body.append(el('p', { class: 'hint' }, ['Checked against Drive just now: only files still there are listed.']));
+  body.append(el('p', { class: 'hint' }, ['Open Drive, go to the Audio recording folder, then Inbox → _processed. Delete the files below (or the whole subfolders once they are empty of anything you want). Largest first.']));
+  const table = el('table', {}, [el('tr', {}, [el('th', {}, ['File in Drive']), el('th', {}, ['Size'])])]);
+  d.items.forEach(i => table.append(el('tr', {}, [el('td', { class: 'path' }, [i.drive_path]), el('td', { class: 'size' }, [formatBytes(i.size_bytes)])])));
+  body.append(table);
+}
+load(false);
+</script>
+{% endblock %}

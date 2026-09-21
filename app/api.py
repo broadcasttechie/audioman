@@ -2,15 +2,16 @@ from flask import Blueprint, jsonify, request, send_file, abort
 import os
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from .extensions import db
-from .models import Resource, RecordingSession, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint, RecorderProfile
+from .models import resource_tags, Category, Resource, RecordingSession, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint, RecorderProfile
 from .settings import get_config, set_config, settings_snapshot, SECRET_KEYS
 from config import Config
 from .timeutil import parse_to_utc_naive, to_utc_iso
+from . import categories as cats
 
 bp = Blueprint("api", __name__)
 
@@ -119,8 +120,11 @@ def _update_resource(r, data):
     On an error status nothing has been committed; callers roll back the session.
     """
 
-    if "category" in data and data["category"] not in (None, *Config.CATEGORIES):
-        return {"error": f"category must be one of {Config.CATEGORIES}"}, 400
+    if "category" in data and data["category"] is not None and data["category"] != r.category:
+        # An archived category keeps its existing files but can't be given to new ones.
+        allowed = cats.active_slugs()
+        if data["category"] not in allowed:
+            return {"error": f"category must be one of {sorted(allowed)}"}, 400
 
     if "status" in data and data["status"] not in ("pending-review", "filed", "archived"):
         # 'filing' and 'failed' are set by the system (jobs/filing.py), never by a client.
@@ -497,6 +501,114 @@ def regenerate_previews(resource_id):
     db.session.commit()
     enqueue("generate-previews", triggered_by="regenerate")
     return jsonify({"status": "queued"}), 202
+
+
+# --- Home: one call for the overview page ---
+
+@bp.get("/overview")
+def overview():
+    from jobs.nas import nas_status
+    recordings = Resource.role.notin_(("sidecar", "project-file"))
+    by_status = dict(db.session.query(Resource.status, db.func.count(Resource.id)).filter(recordings).group_by(Resource.status).all())
+    filed = db.session.query(db.func.count(Resource.id), db.func.coalesce(db.func.sum(Resource.duration_seconds), 0),
+                             db.func.coalesce(db.func.sum(Resource.size_bytes), 0)).filter(recordings, Resource.status == "filed").one()
+
+    recent_projects = (
+        db.session.query(Project, db.func.max(Resource.created_at), db.func.count(Resource.id))
+        .outerjoin(Resource, db.and_(Resource.project_id == Project.id, recordings))
+        .group_by(Project.id).order_by(db.func.max(Resource.created_at).desc().nullslast(), Project.created_at.desc())
+        .limit(6).all())
+    recent_files = (Resource.query.filter(recordings, Resource.status == "filed")
+                    .order_by(Resource.created_at.desc()).limit(6).all())
+    counts = _category_counts()
+    cats.ensure_default_categories()
+    categories = [{"slug": c.slug, "label": c.label, "file_count": counts.get(c.slug, 0)}
+                  for c in Category.query.filter(Category.archived.is_(False)).order_by(Category.sort_order).all()]
+
+    nas_ok, nas_reason = nas_status()
+    # Only errors from the last two days are "current"; an old last result of a job that no longer runs shouldn't nag forever.
+    recent = datetime.utcnow() - timedelta(days=2)
+    job_errors = [{"job": r.job_name, "at": to_utc_iso(r.last_run_at), "detail": (r.log_tail or "")[:160]}
+                  for r in JobRun.query.filter(JobRun.status == "error", JobRun.last_run_at > recent).order_by(JobRun.job_name).all()]
+    return jsonify({
+        "counts": {"pending_review": by_status.get("pending-review", 0), "filing": by_status.get("filing", 0),
+                   "failed": by_status.get("failed", 0), "filed": by_status.get("filed", 0),
+                   "archived": by_status.get("archived", 0)},
+        "library": {"files": filed[0], "hours": round(float(filed[1]) / 3600, 1), "bytes": int(filed[2])},
+        "categories": categories,
+        "recent_projects": [{"id": p.id, "name": p.name, "slug": p.slug, "file_count": n, "last_activity": to_utc_iso(last)}
+                            for p, last, n in recent_projects],
+        "recent_files": [{"id": r.id, "filename": r.filename, "category": r.category,
+                          "captured_at": to_utc_iso(r.captured_at), "duration_seconds": r.duration_seconds} for r in recent_files],
+        "health": {"nas": {"ok": nas_ok, "reason": nas_reason}, "job_errors": job_errors},
+    })
+
+
+# --- Reclaimable Drive space: ingested originals that are safely on the NAS ---
+
+BACKUP_ACK_KEY = "BACKUP_ACKNOWLEDGED"
+
+
+def _reclaimable_rows():
+    """Filed files that came from the Drive Inbox and whose NAS copy exists. Their original is still in
+    Inbox/_processed (the app can't delete it on a personal Drive), taking Drive space until the user does."""
+    rows = []
+    for r in (Resource.query.filter(Resource.status == "filed", Resource.drive_inbox_path.isnot(None), Resource.nas_path.isnot(None))
+              .order_by(Resource.created_at).all()):
+        if not os.path.exists(r.nas_path):
+            continue   # not on the NAS: never offer it (this is also what makes the view safe)
+        size = r.size_bytes if r.size_bytes is not None else os.path.getsize(r.nas_path)
+        rows.append({"id": r.id, "filename": r.filename, "size_bytes": size, "role": r.role or "original",
+                     "drive_path": f"{Config.DRIVE_INBOX_PATH}/_processed/{r.drive_inbox_path}"})
+    return rows
+
+
+@bp.get("/reclaimable")
+def reclaimable():
+    """
+    The originals in Drive `Inbox/_processed` that can be deleted to free Drive space, with sizes and a total.
+    The app has no backup of its own, so it lists them only after the user has confirmed they back up the NAS
+    themselves (PUT /reclaimable/ack); until then only the count and total are shown. `?check_drive=1` also
+    asks Drive which ones are still there, hiding those already deleted.
+    """
+    from jobs.nas import nas_status
+    nas_ok, nas_reason = nas_status()
+    if not nas_ok:
+        return jsonify({"error": "The NAS is not available, so nothing can be confirmed as safely copied.",
+                        "detail": nas_reason}), 503
+    rows = _reclaimable_rows()
+    drive_checked = False
+    if request.args.get("check_drive"):
+        try:
+            import json as _json
+            import subprocess
+            out = subprocess.run(["rclone", "lsjson", "-R", "--files-only", f"{Config.RCLONE_DRIVE_REMOTE}:{Config.DRIVE_INBOX_PATH}/_processed"],
+                                 capture_output=True, text=True, check=True, timeout=Config.RCLONE_LIST_TIMEOUT_SECONDS)
+            present = {e["Path"] for e in _json.loads(out.stdout)}
+            rows = [x for x in rows if x["drive_path"].split("/_processed/", 1)[1] in present]
+            drive_checked = True
+        except Exception:  # noqa: BLE001 -- Drive being unreachable must not break the page
+            drive_checked = False
+    ack = db.session.get(Setting, BACKUP_ACK_KEY)
+    total = sum(x["size_bytes"] for x in rows)
+    body = {"acknowledged": bool(ack and ack.value), "acknowledged_at": ack.value if ack else None,
+            "count": len(rows), "total_bytes": total, "drive_checked": drive_checked}
+    if body["acknowledged"]:
+        body["items"] = sorted(rows, key=lambda x: -x["size_bytes"])
+    return jsonify(body)
+
+
+@bp.put("/reclaimable/ack")
+def reclaimable_ack():
+    """Record (or withdraw) 'I back up the NAS share myself'. The backup is the user's, outside this app."""
+    yes = (request.get_json() or {}).get("acknowledged")
+    if not isinstance(yes, bool):
+        return jsonify({"error": "acknowledged must be true or false"}), 400
+    row = db.session.get(Setting, BACKUP_ACK_KEY) or Setting(key=BACKUP_ACK_KEY)
+    row.value = (datetime.utcnow().isoformat() + "Z") if yes else ""
+    db.session.merge(row)
+    db.session.commit()
+    return jsonify({"acknowledged": yes})
 
 
 @bp.get("/nas/status")
@@ -1033,7 +1145,17 @@ def _placement_error(placement, home):
 
 @bp.get("/projects")
 def list_projects():
-    return jsonify([_project_to_dict(p) for p in Project.query.order_by(Project.name).all()])
+    files = dict(db.session.query(Resource.project_id, db.func.count(Resource.id))
+                 .filter(Resource.project_id.isnot(None), Resource.role.notin_(("sidecar", "project-file")))
+                 .group_by(Resource.project_id).all())
+    sessions = dict(db.session.query(RecordingSession.project_id, db.func.count(RecordingSession.id))
+                    .filter(RecordingSession.project_id.isnot(None)).group_by(RecordingSession.project_id).all())
+    out = []
+    for p in Project.query.order_by(Project.name).all():
+        d = _project_to_dict(p)
+        d["file_count"], d["session_count"] = files.get(p.id, 0), sessions.get(p.id, 0)
+        out.append(d)
+    return jsonify(out)
 
 
 @bp.post("/projects")
@@ -1241,16 +1363,133 @@ def delete_session(session_id):
     return "", 204
 
 
+def _category_to_dict(c, count):
+    return {"slug": c.slug, "label": c.label, "archived": c.archived, "sort_order": c.sort_order, "file_count": count}
+
+
+def _category_counts():
+    return dict(db.session.query(Resource.category, db.func.count(Resource.id))
+                .filter(Resource.category.isnot(None), Resource.role.notin_(("sidecar", "project-file")))
+                .group_by(Resource.category).all())
+
+
 @bp.get("/categories")
 def list_categories():
-    # Config-backed for now; PLAN.md 17.1 makes this a table. Serving it
-    # from the API means pages stop carrying their own copy of the list.
-    return jsonify([{"slug": c, "label": c} for c in Config.CATEGORIES])
+    """Active categories (what pickers offer). ?all=1 includes archived ones, for the manage screen."""
+    cats.ensure_default_categories()
+    query = Category.query.order_by(Category.sort_order, Category.label)
+    if not request.args.get("all"):
+        query = query.filter(Category.archived.is_(False))
+    counts = _category_counts()
+    return jsonify([_category_to_dict(c, counts.get(c.slug, 0)) for c in query.all()])
+
+
+@bp.post("/categories")
+def create_category():
+    data = request.get_json() or {}
+    label = data.get("label")
+    if not isinstance(label, str) or not label.strip():
+        return jsonify({"error": "label is required"}), 400
+    slug = data.get("slug") or cats.slugify(label)
+    if not SLUG_RE.match(slug or ""):
+        return jsonify({"error": "slug must be lowercase letters, digits and hyphens (it becomes a folder name)"}), 400
+    if db.session.get(Category, slug):
+        return jsonify({"error": f"a category with slug '{slug}' already exists"}), 409
+    top = db.session.query(db.func.max(Category.sort_order)).scalar() or 0
+    c = Category(slug=slug, label=label.strip(), sort_order=top + 10)
+    db.session.add(c)
+    db.session.commit()
+    return jsonify(_category_to_dict(c, 0)), 201
+
+
+@bp.patch("/categories/<slug>")
+def update_category(slug):
+    c = Category.query.get_or_404(slug)
+    data = request.get_json() or {}
+    if "slug" in data and data["slug"] != c.slug:
+        return jsonify({"error": "the slug is a folder name and can't be changed; rename the label instead"}), 400
+    if "label" in data:
+        if not isinstance(data["label"], str) or not data["label"].strip():
+            return jsonify({"error": "label can't be empty"}), 400
+        c.label = data["label"].strip()
+    if "archived" in data:
+        if not isinstance(data["archived"], bool):
+            return jsonify({"error": "archived must be true or false"}), 400
+        c.archived = data["archived"]
+    if "sort_order" in data:
+        if isinstance(data["sort_order"], bool) or not isinstance(data["sort_order"], int):
+            return jsonify({"error": "sort_order must be an integer"}), 400
+        c.sort_order = data["sort_order"]
+    db.session.commit()
+    return jsonify(_category_to_dict(c, _category_counts().get(c.slug, 0)))
+
+
+@bp.post("/categories/<slug>/merge")
+def merge_category(slug):
+    """Give every file in this category to another one, then archive this one. Only the database changes:
+    files already on the NAS stay where they are until `refile-all` is run on purpose."""
+    src = Category.query.get_or_404(slug)
+    target = db.session.get(Category, (request.get_json() or {}).get("into"))
+    if target is None or target.slug == src.slug or target.archived:
+        return jsonify({"error": "'into' must be another, active category"}), 400
+    moved = Resource.query.filter_by(category=src.slug).update({"category": target.slug}, synchronize_session=False)
+    src.archived = True
+    db.session.commit()
+    return jsonify({"moved": moved, "into": target.slug})
 
 
 @bp.get("/tags")
 def list_tags():
-    return jsonify([{"id": t.id, "name": t.name} for t in Tag.query.all()])
+    counts = dict(db.session.query(resource_tags.c.tag_id, db.func.count(resource_tags.c.resource_id))
+                  .group_by(resource_tags.c.tag_id).all())
+    tags = Tag.query.order_by(db.func.lower(Tag.name)).all()
+    return jsonify([{"id": t.id, "name": t.name, "file_count": counts.get(t.id, 0)} for t in tags])
+
+
+@bp.patch("/tags/<tag_id>")
+def rename_tag(tag_id):
+    tag = Tag.query.get_or_404(tag_id)
+    name = ((request.get_json() or {}).get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    clash = Tag.query.filter(db.func.lower(Tag.name) == name.lower(), Tag.id != tag.id).first()
+    if clash:
+        return jsonify({"error": f"a tag called '{clash.name}' already exists; merge into it instead",
+                        "merge_into": clash.id}), 409
+    tag.name = name
+    db.session.commit()
+    return jsonify({"id": tag.id, "name": tag.name})
+
+
+@bp.post("/tags/<tag_id>/merge")
+def merge_tag(tag_id):
+    """Move every use of this tag to another tag (skipping files that already have it), then remove this one."""
+    src = Tag.query.get_or_404(tag_id)
+    target = db.session.get(Tag, (request.get_json() or {}).get("into"))
+    if target is None or target.id == src.id:
+        return jsonify({"error": "'into' must be another existing tag"}), 400
+    with_target = {rid for (rid,) in db.session.query(resource_tags.c.resource_id).filter(resource_tags.c.tag_id == target.id)}
+    on_src = [rid for (rid,) in db.session.query(resource_tags.c.resource_id).filter(resource_tags.c.tag_id == src.id)]
+    for rid in on_src:
+        if rid not in with_target:
+            db.session.execute(resource_tags.insert().values(resource_id=rid, tag_id=target.id))
+    db.session.execute(resource_tags.delete().where(resource_tags.c.tag_id == src.id))
+    db.session.delete(src)
+    db.session.commit()
+    return jsonify({"merged": len(on_src), "into": target.id})
+
+
+@bp.delete("/tags/<tag_id>")
+def delete_tag(tag_id):
+    """Remove a tag from everything and delete it. Refuses if it is in use unless ?force=1."""
+    tag = Tag.query.get_or_404(tag_id)
+    used = db.session.query(db.func.count()).select_from(resource_tags).filter(resource_tags.c.tag_id == tag.id).scalar()
+    if used and not request.args.get("force"):
+        return jsonify({"error": f"this tag is on {used} file(s); merge it into another tag, or delete anyway", "file_count": used}), 409
+    db.session.execute(resource_tags.delete().where(resource_tags.c.tag_id == tag.id))
+    db.session.delete(tag)
+    db.session.commit()
+    return "", 204
 
 
 @bp.post("/tags")

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Home{% endblock %}
+{% block head %}
+<style>
+  .banner { border: 1px solid #d55; border-radius: 8px; padding: 0.6rem 0.9rem; margin-bottom: 0.75rem; font-size: 0.9rem; }
+  .banner strong { display: block; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); gap: 0.6rem; margin-bottom: 1.25rem; }
+  a.tile { display: block; border: 1px solid #8884; border-radius: 10px; padding: 0.8rem 0.9rem; text-decoration: none; color: inherit; }
+  a.tile:active { background: #8881; }
+  a.tile .n { font-size: 1.7rem; font-weight: 700; line-height: 1.1; }
+  a.tile .l { font-size: 0.8rem; opacity: 0.75; }
+  a.tile.alert { border-color: #d55; }
+  h2 { font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  a.chip { display: inline-block; padding: 0.25rem 0.7rem; border-radius: 999px; background: #8882; text-decoration: none; color: inherit; font-size: 0.85rem; }
+  .list a { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.6rem 0; border-bottom: 1px solid #8882; text-decoration: none; color: inherit; }
+  .list a:last-child { border-bottom: none; }
+  .list .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list .meta { font-size: 0.8rem; opacity: 0.7; white-space: nowrap; }
+  .foot { margin-top: 1.5rem; font-size: 0.85rem; opacity: 0.8; }
+</style>
+{% endblock %}
+{% block content %}
+<h1>Audio Manager</h1>
+<div id="home" class="status">Loading...</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/app.js"></script>
+<script>
+function tile(href, n, label, alert) {
+  return el('a', { class: 'tile' + (alert ? ' alert' : ''), href }, [el('div', { class: 'n' }, [String(n)]), el('div', { class: 'l' }, [label])]);
+}
+
+function render(d) {
+  const root = document.getElementById('home');
+  root.className = '';
+  root.replaceChildren();
+
+  if (!d.health.nas.ok) {
+    root.append(el('div', { class: 'banner' }, [el('strong', {}, ['The NAS is not available']), d.health.nas.reason + ' Filing and playback of filed recordings will wait until it is back.']));
+  }
+  if (d.health.job_errors.length) {
+    const b = el('div', { class: 'banner' }, [el('strong', {}, ['Background jobs reporting errors'])]);
+    d.health.job_errors.forEach(j => b.append(el('div', {}, [`${j.job}: ${j.detail || 'error'}`])));
+    root.append(b);
+  }
+
+  const c = d.counts, lib = d.library;
+  root.append(el('div', { class: 'tiles' }, [
+    tile('/review', c.pending_review, c.pending_review === 1 ? 'to review' : 'to review'),
+    tile('/library?status=filing', c.filing, 'being copied to the NAS'),
+    tile('/library?status=failed', c.failed, 'failed', c.failed > 0),
+    tile('/library', lib.files, `in the library \u00b7 ${lib.hours} h \u00b7 ${formatBytes(lib.bytes)}`),
+  ]));
+
+  if (d.categories.length) {
+    root.append(el('h2', {}, ['Categories']));
+    root.append(el('div', { class: 'chips' }, d.categories.map(k => el('a', { class: 'chip', href: '/library?category=' + encodeURIComponent(k.slug) }, [`${k.label} \u00b7 ${k.file_count}`]))));
+  }
+
+  root.append(el('h2', {}, ['Recent projects']));
+  if (d.recent_projects.length === 0) root.append(el('p', { class: 'hint' }, ['No projects yet. Create one while reviewing a recording, or on the Manage page.']));
+  else root.append(el('div', { class: 'list' }, d.recent_projects.map(p => el('a', { href: '/library?project_id=' + encodeURIComponent(p.id) }, [
+    el('span', { class: 'name' }, [p.name]), el('span', { class: 'meta' }, [`${p.file_count} file${p.file_count === 1 ? '' : 's'}` + (p.last_activity ? ' \u00b7 ' + formatDate(p.last_activity) : '')]),
+  ]))));
+
+  root.append(el('h2', {}, ['Recently filed']));
+  if (d.recent_files.length === 0) root.append(el('p', { class: 'hint' }, ['Nothing filed yet.']));
+  else root.append(el('div', { class: 'list' }, d.recent_files.map(f => el('a', { href: '/review/' + f.id }, [
+    el('span', { class: 'name' }, [f.filename]), el('span', { class: 'meta' }, [(f.captured_at ? formatDate(f.captured_at) + ' \u00b7 ' : '') + formatDuration(f.duration_seconds)]),
+  ]))));
+
+  root.append(el('p', { class: 'foot' }, [el('a', { href: '/reclaim' }, ['Free up Google Drive space \u2192'])]));
+}
+
+apiJson('GET', '/api/overview').then(render).catch(e => {
+  const root = document.getElementById('home');
+  root.textContent = 'Error: ' + e.message; root.className = 'status err';
+});
+</script>
+{% endblock %}

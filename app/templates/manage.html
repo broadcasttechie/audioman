@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Manage{% endblock %}
+{% block head %}
+<style>
+  .seg { display: flex; gap: 0.4rem; margin: 0.5rem 0 1rem; }
+  .seg button { flex: 1; padding: 0.5rem; }
+  .seg button.on { background: #3a7bd522; border-color: #3a7bd5; font-weight: 600; }
+  .item { border: 1px solid #8884; border-radius: 8px; padding: 0.7rem 0.8rem; margin-bottom: 0.6rem; }
+  .item-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+  .item-head .name { font-weight: 600; }
+  .muted { font-size: 0.8rem; opacity: 0.7; }
+  .actions { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem; align-items: center; }
+  .actions button, .actions select { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
+  .field { display: block; margin-top: 0.5rem; font-size: 0.8rem; }
+  .field input[type=text], .field textarea, .field select { display: block; width: 100%; margin-top: 0.15rem; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  .add { display: flex; gap: 0.4rem; margin-bottom: 0.9rem; }
+  .add input { flex: 1; min-width: 0; }
+  .sess { border-top: 1px solid #8882; margin-top: 0.6rem; padding-top: 0.5rem; }
+  .archived { opacity: 0.55; }
+  #msg { min-height: 1.2rem; font-size: 0.85rem; margin-bottom: 0.5rem; }
+</style>
+{% endblock %}
+{% block content %}
+<h1>Manage</h1>
+<div class="seg" id="seg"></div>
+<div id="msg"></div>
+<div id="panel" class="status">Loading...</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/app.js"></script>
+<script>
+let tab = (location.hash || '#projects').slice(1);
+const state = { projects: [], sessions: [], tags: [], categories: [], tagFilter: '' };
+const msg = (text, bad) => { const m = document.getElementById('msg'); m.textContent = text || ''; m.className = bad ? 'status err' : 'status ok'; };
+const guard = (fn) => async (...a) => { try { msg(''); await fn(...a); } catch (e) { msg(e.message, true); } };
+
+async function loadAll() {
+  [state.projects, state.sessions, state.tags, state.categories] = await Promise.all([
+    apiJson('GET', '/api/projects'), apiJson('GET', '/api/sessions'), apiJson('GET', '/api/tags'), apiJson('GET', '/api/categories?all=1'),
+  ]);
+  render();
+}
+
+function render() {
+  const seg = document.getElementById('seg');
+  seg.replaceChildren(...[['projects', 'Projects'], ['tags', 'Tags'], ['categories', 'Categories']].map(([k, label]) =>
+    el('button', { type: 'button', class: tab === k ? 'on' : '', onclick: () => { tab = k; location.hash = k; render(); } }, [label])));
+  const panel = document.getElementById('panel');
+  panel.className = ''; panel.replaceChildren();
+  ({ projects: renderProjects, tags: renderTags, categories: renderCategories }[tab] || renderProjects)(panel);
+}
+
+// ---- projects ----
+function projectCard(p) {
+  const sessions = state.sessions.filter(s => s.project_id === p.id);
+  const save = (patch) => guard(async () => { Object.assign(p, await apiJson('PATCH', `/api/projects/${p.id}`, patch)); msg('Saved'); })();
+  const name = el('input', { type: 'text', value: p.name });
+  name.addEventListener('change', () => name.value.trim() ? save({ name: name.value.trim() }) : (name.value = p.name));
+  const notes = el('textarea', { rows: '3' }); notes.value = p.notes || '';
+  notes.addEventListener('blur', () => { if (notes.value !== (p.notes || '')) save({ notes: notes.value }); });
+  const placement = el('select', {}, ['nas', 'both', 'drive'].map(v => el('option', { value: v }, [{ nas: 'NAS only', both: 'NAS and Drive', drive: 'Drive only' }[v]])));
+  const home = el('select', {}, ['nas', 'drive'].map(v => el('option', { value: v }, [{ nas: 'Edited on the NAS', drive: 'Edited on Drive' }[v]])));
+  placement.value = p.placement; home.value = p.home;
+  const both = () => save({ placement: placement.value, home: home.value }).then(() => { placement.value = p.placement; home.value = p.home; });
+  placement.addEventListener('change', () => { if (placement.value === 'nas') home.value = 'nas'; if (placement.value === 'drive') home.value = 'drive'; both(); });
+  home.addEventListener('change', both);
+
+  const card = el('div', { class: 'item' }, [
+    el('div', { class: 'item-head' }, [el('span', { class: 'name' }, [p.name]), el('span', { class: 'muted' }, [`${p.file_count} file${p.file_count === 1 ? '' : 's'} · ${p.session_count} session${p.session_count === 1 ? '' : 's'} · folder: ${p.slug}`])]),
+    el('label', { class: 'field' }, ['Name', name]),
+    el('label', { class: 'field' }, ['Notes', notes]),
+    el('div', { class: 'row2' }, [el('label', { class: 'field' }, ['Where copies live', placement]), el('label', { class: 'field' }, ['Where it is edited', home])]),
+    el('p', { class: 'muted' }, ['Copies on Drive are not made yet; this records your intent.']),
+    el('div', { class: 'actions' }, [el('a', { href: '/library?project_id=' + encodeURIComponent(p.id) }, ['Open in the library →'])]),
+  ]);
+  sessions.forEach(s => card.append(sessionRow(s)));
+  return card;
+}
+
+function sessionRow(s) {
+  const save = (patch) => guard(async () => { Object.assign(s, await apiJson('PATCH', `/api/sessions/${s.id}`, patch)); msg('Saved'); })();
+  const name = el('input', { type: 'text', value: s.name });
+  name.addEventListener('change', () => name.value.trim() ? save({ name: name.value.trim() }) : (name.value = s.name));
+  const notes = el('textarea', { rows: '2', placeholder: 'Session notes' }); notes.value = s.notes || '';
+  notes.addEventListener('blur', () => { if (notes.value !== (s.notes || '')) save({ notes: notes.value }); });
+  return el('div', { class: 'sess' }, [
+    el('div', { class: 'item-head' }, [el('span', { class: 'muted' }, ['Session' + (s.session_date ? ' · ' + s.session_date : '')]), el('span', { class: 'muted' }, [`${s.file_count} file(s)`])]),
+    name, notes,
+    el('p', { class: 'muted' }, ['Renaming changes the folder name for new filings; files already on the NAS stay where they are until you re-file on purpose.']),
+  ]);
+}
+
+function renderProjects(panel) {
+  const slug = el('input', { type: 'text', placeholder: 'Folder name, e.g. the-show' });
+  const name = el('input', { type: 'text', placeholder: 'New project name' });
+  name.addEventListener('input', () => { if (!slug.dataset.touched) slug.value = name.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''); });
+  slug.addEventListener('input', () => { slug.dataset.touched = '1'; });
+  panel.append(el('div', { class: 'add' }, [name, slug, el('button', { type: 'button', onclick: guard(async () => {
+    if (!name.value.trim()) return;
+    await apiJson('POST', '/api/projects', { name: name.value.trim(), slug: slug.value.trim() });
+    await loadAll(); msg('Project created');
+  }) }, ['Add'])]));
+  panel.append(el('p', { class: 'muted' }, ['The folder name is used on the NAS and cannot be changed once created.']));
+  if (state.projects.length === 0) panel.append(el('p', { class: 'hint' }, ['No projects yet.']));
+  state.projects.forEach(p => panel.append(projectCard(p)));
+}
+
+// ---- tags ----
+function renderTags(panel) {
+  const filter = el('input', { type: 'search', placeholder: 'Filter tags', value: state.tagFilter });
+  filter.addEventListener('input', () => { state.tagFilter = filter.value; renderTagList(list); });
+  const list = el('div');
+  panel.append(filter, el('p', { class: 'muted' }, ['One pool of tags, shared by files, sessions and projects. Renaming applies everywhere; merging moves every use of one tag onto another.']), list);
+  renderTagList(list);
+}
+
+function renderTagList(list) {
+  list.replaceChildren();
+  const q = state.tagFilter.trim().toLowerCase();
+  const shown = state.tags.filter(t => !q || t.name.toLowerCase().includes(q));
+  if (!shown.length) list.append(el('p', { class: 'hint' }, [state.tags.length ? 'No tags match.' : 'No tags yet.']));
+  shown.forEach(t => list.append(tagCard(t)));
+}
+
+function tagCard(t) {
+  const others = state.tags.filter(x => x.id !== t.id);
+  const mergeSel = el('select', {}, [el('option', { value: '' }, ['Merge into…'])].concat(others.map(o => el('option', { value: o.id }, [o.name]))));
+  const card = el('div', { class: 'item' }, [
+    el('div', { class: 'item-head' }, [el('span', { class: 'name' }, [t.name]), el('span', { class: 'muted' }, [`${t.file_count} file${t.file_count === 1 ? '' : 's'}`])]),
+    el('div', { class: 'actions' }, [
+      el('button', { type: 'button', onclick: guard(async () => {
+        const name = prompt('New name for this tag', t.name);
+        if (name === null || !name.trim() || name.trim() === t.name) return;
+        try { await apiJson('PATCH', `/api/tags/${t.id}`, { name: name.trim() }); }
+        catch (e) {
+          if (e.status === 409 && e.data && e.data.merge_into && confirm(`${e.message}\n\nMerge "${t.name}" into it now?`)) await apiJson('POST', `/api/tags/${t.id}/merge`, { into: e.data.merge_into });
+          else throw e;
+        }
+        await loadAll(); msg('Renamed');
+      }) }, ['Rename']),
+      mergeSel,
+      el('button', { type: 'button', onclick: guard(async () => {
+        if (!mergeSel.value) return msg('Choose the tag to merge into first.', true);
+        const into = state.tags.find(x => x.id === mergeSel.value);
+        if (!confirm(`Move all ${t.file_count} use(s) of "${t.name}" onto "${into.name}" and remove "${t.name}"?`)) return;
+        await apiJson('POST', `/api/tags/${t.id}/merge`, { into: mergeSel.value });
+        await loadAll(); msg('Merged');
+      }) }, ['Merge']),
+      el('button', { type: 'button', onclick: guard(async () => {
+        if (!confirm(t.file_count ? `Remove "${t.name}" from ${t.file_count} file(s) and delete it?` : `Delete "${t.name}"?`)) return;
+        await apiJson('DELETE', `/api/tags/${t.id}` + (t.file_count ? '?force=1' : ''));
+        await loadAll(); msg('Deleted');
+      }) }, ['Delete']),
+    ]),
+  ]);
+  return card;
+}
+
+// ---- categories ----
+function renderCategories(panel) {
+  const label = el('input', { type: 'text', placeholder: 'New category, e.g. Rehearsals' });
+  panel.append(el('div', { class: 'add' }, [label, el('button', { type: 'button', onclick: guard(async () => {
+    if (!label.value.trim()) return;
+    await apiJson('POST', '/api/categories', { label: label.value.trim() });
+    await loadAll(); msg('Category added');
+  }) }, ['Add'])]));
+  panel.append(el('p', { class: 'muted' }, ['A category is the broad kind of recording. Its folder name (shown below) is fixed once created; the label can be renamed any time. Archiving hides it from pickers but keeps it on existing files.']));
+  state.categories.forEach(c => panel.append(categoryCard(c)));
+}
+
+function categoryCard(c) {
+  const active = state.categories.filter(x => !x.archived && x.slug !== c.slug);
+  const label = el('input', { type: 'text', value: c.label });
+  label.addEventListener('change', guard(async () => {
+    if (!label.value.trim()) { label.value = c.label; return; }
+    Object.assign(c, await apiJson('PATCH', `/api/categories/${c.slug}`, { label: label.value.trim() })); msg('Saved');
+  }));
+  const mergeSel = el('select', {}, [el('option', { value: '' }, ['Merge into…'])].concat(active.map(o => el('option', { value: o.slug }, [o.label]))));
+  return el('div', { class: 'item' + (c.archived ? ' archived' : '') }, [
+    el('div', { class: 'item-head' }, [el('span', { class: 'muted' }, [`folder: misc/${c.slug}/`]), el('span', { class: 'muted' }, [`${c.file_count} file${c.file_count === 1 ? '' : 's'}` + (c.archived ? ' · archived' : '')])]),
+    label,
+    el('div', { class: 'actions' }, [
+      el('button', { type: 'button', onclick: guard(async () => { Object.assign(c, await apiJson('PATCH', `/api/categories/${c.slug}`, { archived: !c.archived })); render(); msg(c.archived ? 'Archived' : 'Restored'); }) }, [c.archived ? 'Restore' : 'Archive']),
+      c.archived ? '' : mergeSel,
+      c.archived ? '' : el('button', { type: 'button', onclick: guard(async () => {
+        if (!mergeSel.value) return msg('Choose the category to merge into first.', true);
+        if (!confirm(`Give the ${c.file_count} file(s) in "${c.label}" to the chosen category and archive "${c.label}"? Files already on the NAS stay where they are.`)) return;
+        await apiJson('POST', `/api/categories/${c.slug}/merge`, { into: mergeSel.value });
+        await loadAll(); msg('Merged');
+      }) }, ['Merge']),
+    ]),
+  ]);
+}
+
+loadAll().catch(e => { const p = document.getElementById('panel'); p.textContent = 'Error: ' + e.message; p.className = 'status err'; });
+</script>
+{% endblock %}

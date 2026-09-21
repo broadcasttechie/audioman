@@ -135,6 +135,13 @@ e.g. a `GET /api/needs-attention` that rolls these up, surfaced as a badge
 somewhere in the UI nav — rather than each one being its own silent trail.
 Not built; flagging so it doesn't get lost.
 
+## Timers (systemd, in `/etc/systemd/system`; unit files in `deploy/systemd/`)
+
+Enabled: drive-inbox-pull (15 min), file-resources (5 min, safety net), generate-previews (10 min, safety net),
+process-exports, enrich-locations, enrich-photos, verify-integrity, find-orphans, retry-failed, library-verify.
+**Deliberately disabled:** `refile-all` (a rename must not move audio unattended) and `nas-to-drive-library`
+(cannot succeed with a service account; see PLAN 18.5k). Both are one `systemctl enable --now` away.
+
 ## Filing runs in the background
 
 `PATCH status=filed` only queues; the `file-resources` job (worker) copies to the NAS. If something looks stuck in
