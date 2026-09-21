@@ -173,11 +173,13 @@ DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
 - **Drive write access only matters for NAS-home projects copied to Drive.**
   Drive-home projects flow Drive -> NAS over the existing read-only service
   account. So the Drive remote choice can wait until WP9.
-- **NAS facts:** ds124 = 192.168.1.2, ~3.4 TB free of 11.2 TB, shared with
-  Plex, Photos, Proxmox backups and the PBS datastore. `/volume1/Audio` exists
-  but was **not yet in the NFS export list** on 2026-09-21. Hosts to allow:
-  pmx1/2/3 = 192.168.1.231/.232/.233 (Proxmox mounts, the LXC bind-mounts;
-  the container's own IP is not used). pmx2 = 192.168.1.232.
+- **NAS is MOUNTED (2026-09-21).** ds124 = 192.168.1.2, ~3.2 TB free of 11 TB,
+  shared with Plex, Photos, Proxmox backups and the PBS datastore. Proxmox
+  storage `audio-library`; the library is the `library/` subfolder, bind-mounted
+  at `/mnt/nas/audio` (`replicate=0,backup=0` — LXC 132 is replicated to pmx1,
+  which otherwise refuses the mount). Existing file migrated and verified.
+  Details in DEPLOYMENT.md. Still to do: the **mount guard** (marker file
+  `/mnt/nas/audio/.audio-manager-nas` exists for it) and the **backup**.
 
 ## Questions the user can answer offline (each unblocks a package)
 1. Correct the wrong date on the existing resource (15th → 17th)? (WP1)
@@ -189,8 +191,8 @@ DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
 6. Where do multitrack files come from / a sample of names when available. (WP2)
 7. OK for filename/mtime dates as *suggestions* confirmed at intake — assumed
    yes from "filenames often have times"; say if not. (WP2)
-8. Synology NFS export + mount (`nfs: audio-library`, `mp0`), UniFi reservation
-   and DNS, PBS/replication. Needed before the archive import. (WP5 gate)
+8. ~~Synology NFS export + mount~~ **done 2026-09-21**. Still open: UniFi
+   reservation and DNS, and the backup decision (before the archive import).
 
 ## Android app — PLAN ONLY
 v1 is an **uploader for files on attached storage** (USB card reader /

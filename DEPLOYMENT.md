@@ -137,21 +137,36 @@ Not built; flagging so it doesn't get lost.
 
 ## NAS
 
-- Decision: **Synology (ds124)**, new share `/volume1/Audio` — created.
-- `/mnt/nas/audio` inside the container is currently just an **empty local
-  directory**, not yet NFS-mounted — filing a resource (`status: filed`) will
-  write there but it won't reach the Synology until the mount is live.
-- **Blocked on DSM UI**, not automatable from here: the scoped `claude`
-  account on ds124 only has sudo for `synoshare`/`synonfs` (deliberately, it
-  seems) — no CLI path to grant NFS host permissions. Needs, in DSM:
-  Control Panel → Shared Folder → **Audio** → Edit → NFS Permissions → Create
-  → hosts `192.168.1.231`, `192.168.1.232`, `192.168.1.233` (matches the
-  existing Plex/backups export convention — Proxmox hosts mount NFS, then
-  bind-mount into the LXC), read/write.
-- Once that's live: add `nfs: audio-library` to Proxmox storage (export
-  `/volume1/Audio`, server `ds124`), then `pct set 132 -mp0
-  /mnt/pve/audio-library,mp=/mnt/nas/audio` on pmx2. I can do both once the
-  export exists.
+**Mounted and live (2026-09-21).** Synology ds124 (192.168.1.2), share
+`/volume1/Audio`, NFSv3 exported to the three Proxmox hosts
+(192.168.1.231/.232/.233, read/write, squash to admin).
+
+- Proxmox: cluster-wide storage `audio-library` (`pvesm add nfs audio-library
+  --server ds124 --export /volume1/Audio --content snippets --options
+  soft,timeo=100,retrans=2`), mounted on the hosts at `/mnt/pve/audio-library`.
+  `content snippets` was only to satisfy Proxmox; it created an unused
+  `snippets/` folder at the share root.
+- The library tree lives in the **`library/` subfolder** of the share, which is
+  bind-mounted into the LXC: `pct set 132 -mp0
+  /mnt/pve/audio-library/library,mp=/mnt/nas/audio,backup=0,replicate=0`.
+  **`replicate=0` was required**: LXC 132 has a storage-replication job
+  (132-0 -> pmx1), and Proxmox refuses a non-replicatable volume without it.
+  The mount is therefore not replicated and not in vzdump backups — the audio
+  is protected only by whatever backup is chosen for the NAS (open, see
+  NEXT.md).
+- `/mnt/nas/audio/.audio-manager-nas` is a marker file that only exists on the
+  NAS; the planned **mount guard** (not built) should require it before any
+  filing/copy/verify.
+- Migration: the one existing filed file was copied from the container's root
+  disk to the NAS, checksums matched, then the local copy was removed.
+  Verified after the reboot: mountpoint present, container writes land as the
+  squashed admin user, the audio endpoint returns 206 from the NAS file, the
+  library lists the file with its unchanged path, and `verify-integrity`
+  reports no mismatches.
+- Mount options follow the existing Plex/backups storages (`soft`). A soft mount
+  can return an I/O error to a write rather than hang; filing should copy,
+  verify the checksum, then delete the staging file (not yet confirmed in the
+  code).
 
 ## Still needed (not things I can/should do unilaterally)
 
