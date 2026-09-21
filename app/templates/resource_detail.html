@@ -491,7 +491,7 @@ function buildLocationSection(resource) {
   const ctl = { setPick: null };
 
   const describe = () => (loc ? `${loc.lat.toFixed(5)}, ${loc.lon.toFixed(5)}` : 'No location yet.') +
-    (resource.has_track ? ' · click the route to jump the audio to that moment.' : '');
+    (resource.has_track ? ' · click the route to play from that moment.' : '');
   status.textContent = (locationNote ? locationNote + ' ' : '') + describe();
   locationNote = '';
 
@@ -582,7 +582,15 @@ async function mountTrackMap(holder, resource, picker, status, follow, followLab
       if (!layer) return;
       const hit = layer.hit(map, x, y, 26);
       const a = audio();
-      if (hit && a) { a.currentTime = hit.offset; status.textContent = `Jumped to ${AudioMap.fmtTime(hit.offset)}.`; map.schedule(); }
+      if (hit && a) {
+        a.currentTime = hit.offset;
+        status.textContent = `Playing from ${AudioMap.fmtTime(hit.offset)}.`;
+        // A click is a user gesture, so the browser allows this. (Tapping the waveform only seeks: that is
+        // what you want when you are placing a clip start/end and need the position to hold still.)
+        const started = a.play();
+        if (started && started.catch) started.catch(() => { status.textContent = `Jumped to ${AudioMap.fmtTime(hit.offset)}; press play.`; });
+        map.schedule();
+      }
     };
     map.onHover = (x, y) => { if (layer && !picker.active) layer.setHover(map, x, y); };
     canvas.addEventListener('pointerleave', () => { if (layer) layer.setHover(map, null, null); });
@@ -812,7 +820,9 @@ function buildWaveformSection(resource) {
 
   let tries = 0;
   const load = async () => {
-    if (!document.body.contains(wrap)) return;              // the page re-rendered; a newer section took over
+    // A re-render replaces this section; a newer one has taken over (the check has to happen AFTER the section is
+    // attached, which is why the first call below is deferred: at build time it isn't on the page yet).
+    if (!document.body.contains(wrap)) return;
     try {
       const wf = await fetchWaveform(resource.id);
       if (!wf) {
@@ -823,7 +833,7 @@ function buildWaveformSection(resource) {
       mountWaveform(wrap, wf);
     } catch (e) { note.textContent = 'The waveform could not be loaded: ' + e.message; }
   };
-  load();
+  setTimeout(load, 0);                                       // after renderDetail has attached this section
   return section;
 }
 
