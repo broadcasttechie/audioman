@@ -311,6 +311,21 @@ function buildNotesSection(resource) {
     catch (e) { alert('Error: ' + e.message); }
   });
   section.append(notes);
+  if (resource.filename_info && resource.filename_info.is_edit && !resource.derived_from_id) {
+    const box = el('div', { class: 'hint' }, ['The filename says this is an edited version. ']);
+    section.append(box);
+    apiJson('GET', `/api/resources/${resource.id}/edit-candidates`).then(list => {
+      if (!list.length) { box.append('No matching original found in the library yet.'); return; }
+      box.append('Is it an edit of: ');
+      list.forEach(c => {
+        const b = el('button', { type: 'button' }, [c.filename]);
+        b.addEventListener('click', async () => {
+          try { renderDetail(await patchResource({ derived_from_id: c.id })); } catch (e) { alert('Error: ' + e.message); }
+        });
+        box.append(b, ' ');
+      });
+    }).catch(() => {});
+  }
   if (resource.role && resource.role !== 'original') {
     section.append(el('p', { class: 'hint' }, [
       `This file is an ${resource.role}` + (resource.derived_from_id ? ' of another file in the library.' : '.'),

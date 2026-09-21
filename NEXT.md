@@ -274,7 +274,11 @@ No migration was needed (the user confirmed only test data exists), so the chang
 - **`nas-to-drive-library` timer disabled** (it can never succeed: a service account has no Drive quota; see PLAN 18.5k),
   and the guard marker is now excluded from any future sync/check. Re-enable with
   `systemctl enable --now audio-manager-nas-to-drive-library.timer` once the Drive-copy design (package 9) is done.
-- Tests: 93 unit tests; 11 live checks (`tests/live/`, README) all green. The NAS-guard test now restores the job
+- **Search** in the library now matches notes, session name, project name and tags as well as the filename (wildcard
+  characters are literal). **Edit linking:** a file named `...-EDIT` gets a hint on its detail screen offering the
+  original(s) it may belong to (same Inbox folder + same leading timestamp), one click to link it (`derived_from`,
+  role `edit`); never automatic.
+- Tests: 93 unit tests; 12 live checks (`tests/live/`, README) all green. The NAS-guard test now restores the job
   status it provokes, so it can't leave false errors on Home.
 
 ## Work packages (proposed order; each ends with something checkable)

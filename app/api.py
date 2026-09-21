@@ -71,7 +71,14 @@ def list_resources():
 
     q = (request.args.get("q") or "").strip()
     if q:
-        query = query.filter(Resource.filename.icontains(q, autoescape=True))
+        # Search what people actually remember: the name, their notes, the session or project it belongs to, a tag.
+        query = query.filter(db.or_(
+            Resource.filename.icontains(q, autoescape=True),
+            Resource.notes.icontains(q, autoescape=True),
+            Resource.session.has(RecordingSession.name.icontains(q, autoescape=True)),
+            Resource.project.has(Project.name.icontains(q, autoescape=True)),
+            Resource.tags.any(Tag.name.icontains(q, autoescape=True)),
+        ))
 
     total = query.count()
 
@@ -476,6 +483,36 @@ def _derived_response(r, kind):
     from jobs.queue import enqueue
     enqueue("generate-previews", triggered_by="requested")
     return jsonify({"status": "generating"}), 202
+
+
+@bp.get("/resources/<resource_id>/edit-candidates")
+def edit_candidates(resource_id):
+    """
+    For a file whose name says it is an edited version ("...-EDIT"), which originals might it be an edit of?
+    Same Inbox folder and the same leading timestamp in the name (e.g. 250424-121237), or failing that the same
+    exact capture time. Only ever a suggestion: linking is the user's decision (PATCH derived_from_id).
+    """
+    from jobs.filename_patterns import strip_name
+    r = Resource.query.get_or_404(resource_id)
+    info = r.filename_info or {}
+    if not info.get("is_edit") or r.derived_from_id:
+        return jsonify([])
+    m = re.match(r"^(\d{6}-\d{6})", strip_name(r.filename))
+    query = Resource.query.filter(Resource.id != r.id, Resource.role == "original",
+                                  Resource.status.in_(("pending-review", "filing", "filed")))
+    if m:
+        query = query.filter(Resource.filename.ilike(m.group(1).replace("%", "") + "%"))
+    elif r.captured_at is not None and r.captured_at_precision == "exact":
+        query = query.filter(Resource.captured_at == r.captured_at)
+    else:
+        return jsonify([])
+    out = []
+    for c in query.order_by(Resource.filename).limit(20).all():
+        cinfo = c.filename_info or {}
+        if cinfo.get("is_edit") or (cinfo.get("folder") or None) != (info.get("folder") or None):
+            continue
+        out.append({"id": c.id, "filename": c.filename, "status": c.status})
+    return jsonify(out[:5])
 
 
 @bp.get("/resources/<resource_id>/waveform")
