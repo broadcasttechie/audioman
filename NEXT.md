@@ -146,6 +146,39 @@ Cheap wins any time (each under an hour): pause/disable the failing hourly
 set Flask `MAX_CONTENT_LENGTH` and nginx `client_max_body_size`; update
 DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
 
+## Storage gaps found 2026-09-21 (decide/do before the packages noted)
+- **No real backup of the library (before WP5 archive import and WP9).**
+  Drive is no longer the safety net (user is cutting Drive use, and the
+  Drive upload never worked). After filing, the NAS holds the only copy; the
+  ingested originals in `Inbox/_processed` are the only other copy until the
+  user deletes them. ds124 (192.168.1.2) also holds the Proxmox/PBS backups,
+  so it cannot back itself up. **Decide a backup target** (external USB disk
+  via Hyper Backup, a second box, or an off-site cloud backup — the user's
+  "no cloud" rule was stated for transcription; ask whether it covers backups).
+  The reclaimable-space view (WP6) must offer a file only when it is on the
+  NAS, checksum-verified **and** present in that backup.
+  Proxmox note: a bind-mounted `mp0` is not included in vzdump unless flagged,
+  so the LXC backups will not contain the audio.
+- **NAS mount guard (before the mount goes live).** `/mnt/nas/audio` is now a
+  plain directory on the 16 GB root disk. Once NFS is mounted, a dropped mount
+  would let filing write to the local disk. Filing, copying and verify jobs
+  must first confirm the path is a live mount (e.g. `os.path.ismount` plus a
+  marker file that only exists on the NAS) and refuse otherwise. Also confirm
+  filing copies, verifies the checksum, and only then removes the staging file
+  (not checked in the code yet).
+- **Filename collisions (before WP3).** Originals are never renamed, but names
+  like `STE-000.wav` repeat. Proposed: `{project}/{session}/{filename}` with
+  the session folder as the namespace (e.g. `2026-09-15 Night 2`); a collision
+  inside one session is refused and shown to the user, never overwritten.
+- **Drive write access only matters for NAS-home projects copied to Drive.**
+  Drive-home projects flow Drive -> NAS over the existing read-only service
+  account. So the Drive remote choice can wait until WP9.
+- **NAS facts:** ds124 = 192.168.1.2, ~3.4 TB free of 11.2 TB, shared with
+  Plex, Photos, Proxmox backups and the PBS datastore. `/volume1/Audio` exists
+  but was **not yet in the NFS export list** on 2026-09-21. Hosts to allow:
+  pmx1/2/3 = 192.168.1.231/.232/.233 (Proxmox mounts, the LXC bind-mounts;
+  the container's own IP is not used). pmx2 = 192.168.1.232.
+
 ## Questions the user can answer offline (each unblocks a package)
 1. Correct the wrong date on the existing resource (15th → 17th)? (WP1)
 2. Confirm one `voice` category replacing voice-personal/voice-project. (WP8)
