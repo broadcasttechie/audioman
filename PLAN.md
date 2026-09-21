@@ -1436,8 +1436,9 @@ no server work done *for* the app, until the user explicitly asks.**
 
 ### 19.1 Scope decided
 - **v1 = an uploader for files on attached storage** (an SD card in a USB
-  reader, or a recorder in mass-storage mode plugged into the phone). Not a
-  recorder, not a library browser.
+  reader, or a recorder in mass-storage mode plugged into the phone).
+  *Superseded in part by §19.5 (same day): the app also browses and plays the
+  library and downloads files, with conversion.* Still not a recorder.
 - **Recording in the app is a good idea, kept as a later, separate option**
   (§16 notes: USB audio input, foreground service, exact timestamp at the
   source). Not part of v1.
@@ -1493,3 +1494,63 @@ GPS, project/session picked before recording); browsing/playing/tagging from
 the phone; notifications when transcripts finish. Native Kotlin is the likely
 tool, since recording, USB and background work are platform-specific — not
 decided.
+
+### 19.5 Scope update: metadata at upload, browse/playback, download (plan only)
+
+Stated later on 2026-09-21. Still **plan only — nothing to be built until
+explicitly asked.**
+
+**Upload must carry key metadata and be quick.**
+- Attach metadata at upload time: **project and session** (existing, or
+  create new), category, tags, title/notes, recorder profile, and an
+  optional **date override for the whole batch** (e.g. "all of these are
+  15 Sept" for `STE-` files that carry no date), stored as
+  `approximate`/manual per §18.5c — never as a confirmed exact time unless the
+  user says so. Optional "use my current location" is an explicit choice,
+  not a default (the phone is rarely where the recording was made).
+- **Quick means few taps:** defaults remembered from the last upload
+  ("same project/session as last time" in one tap), one set of metadata for a
+  whole selection, and the transfer runs in the background so the user can
+  leave the screen. Metadata can be completed later on the web UI; an upload
+  is never blocked on it.
+- **Fast transfer:** skip files already sent (local record by name/size/mtime,
+  then a server "have this checksum?" query), several files/chunks in
+  parallel, resumable (§19.3), Wi-Fi/VPN preferred.
+- **Works offline:** the project/session list is cached so the user can
+  choose without a connection; the selection and metadata are queued with
+  the upload, and a "new project/session" made offline is created on the
+  server when it syncs, using a client-generated id so a retry can't create
+  it twice.
+
+**Browse and playback of the library.**
+- Browse by the same lenses as the web app (project → session → file;
+  category; tags; recent; search) using the existing library API, versioned so
+  the app and server can move independently.
+- **Playback should not stream the original.** A 30-minute 32-bit-float WAV
+  is ~690 MB, hopeless on mobile data even over the VPN. Proposed: a
+  server-generated **proxy** per file (compressed, e.g. AAC/Opus at ~96–128
+  kbps; format not decided), created by a background job like the waveform
+  (§18.5i), cached on local disk by checksum, served with HTTP Range. The
+  web player benefits from the same proxy. The waveform `.dat` drives the
+  scrubber and segments (§18.4) give jump points once they exist.
+- Playback in the app uses the platform media player (Media3/ExoPlayer is the
+  likely choice; not decided).
+
+**Download to the phone, converting when needed.**
+- The server already has an export/convert workflow (§15: original / wav / mp3
+  / flac, clip ranges, async job then download link). The app reuses it:
+  choose a file (or a segment/clip) and a format → job → app polls → downloads
+  to the phone, showing progress, resumable. "Original" downloads the file
+  as stored. Sidecars and project files are not offered to the phone.
+- Downloads are a **copy**, never a move; the library is unchanged.
+
+**Consequences for the server (only when asked, added to the §19.3 list):**
+- a **proxy generation job and endpoint** (new; also useful for the web UI);
+- APIs to create/list **projects and sessions** and to accept the upload
+  **metadata block**, all idempotent by client-generated ids;
+- an export API the app can drive without the web session;
+- a stable, versioned API and per-device authentication once the app is a
+  second client (the shared key is thin for browse/download).
+- The parked **private flag** (§18.5e) matters more once a phone can download:
+  decide it before the app exposes downloads.
+

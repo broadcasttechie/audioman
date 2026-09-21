@@ -127,7 +127,9 @@ update DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
 
 ## Android app — PLAN ONLY
 v1 is an **uploader for files on attached storage** (USB card reader /
-recorder), not a recorder; recording is a later option. **Do not build the app
+recorder) that attaches key metadata (project/session, tags, date override) and
+must be quick, **plus browse, playback (via a server-made compressed proxy) and
+download with conversion**; recording is a later option. **Do not build the app
 or server work for it until the user explicitly asks.** Plan and server gap
 list: PLAN.md §19.
 
