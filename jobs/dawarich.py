@@ -7,19 +7,18 @@ https://dawarich.app/docs/api/dawarich-api/):
   single "nearest point to this timestamp" endpoint, so we fetch a
   window and pick/derive what we need ourselves.
 
-NOTE: the exact date-range query param names (start_at/end_at below)
-come from Dawarich's documented convention but weren't confirmed from
-a static fetch of their docs page (it renders the param table via JS).
-Verify against your instance's own /api-docs (Swagger/OpenAPI) once
-Dawarich is running, and adjust PARAM_START/PARAM_END below if needed
-— everything else in this client is unaffected by that detail.
+The range params start_at/end_at were confirmed against the real instance
+(2026-09): integer epoch values filter correctly, and point `timestamp`
+values come back as integer epoch seconds (UTC). All datetimes handled
+here are naive UTC (app/timeutil.py).
 """
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import requests
 
 from config import Config
 from app.settings import get_config
+from app.timeutil import parse_point_timestamp, to_epoch
 from .retry import call_with_retry
 
 PARAM_START = "start_at"
@@ -47,8 +46,10 @@ def fetch_points_in_range(start, end, max_attempts=None):
             f"{dawarich_url}/api/v1/points",
             params={
                 "api_key": get_config("DAWARICH_API_KEY"),
-                PARAM_START: start.isoformat(),
-                PARAM_END: end.isoformat(),
+                # Integer epoch seconds (UTC): the form confirmed against a real instance.
+                # Sending a naive ISO string left the timezone to Dawarich's guess.
+                PARAM_START: to_epoch(start),
+                PARAM_END: to_epoch(end),
                 "per_page": 200,
                 "page": page,
             },
@@ -67,12 +68,14 @@ def fetch_points_in_range(start, end, max_attempts=None):
 
         for p in batch:
             ts_raw = p.get("timestamp") or p.get("recorded_at")
-            if not ts_raw:
+            if not ts_raw or p.get("latitude") is None or p.get("longitude") is None:
                 continue
             points.append({
-                "timestamp": datetime.fromisoformat(ts_raw),
-                "lat": p["latitude"],
-                "lon": p["longitude"],
+                # Dawarich returns integer epoch seconds, not ISO strings.
+                "timestamp": parse_point_timestamp(ts_raw),
+                # ...and coordinates as strings ("53.0082"): numbers from here on.
+                "lat": float(p["latitude"]),
+                "lon": float(p["longitude"]),
             })
 
         total_pages = int(response.headers.get("X-Total-Pages", 1))

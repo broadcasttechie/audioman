@@ -79,6 +79,29 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
 - **Archive import** (~340 files) goes through the Inbox — no import feature.
   Prereqs: NAS mounted, recursion into subfolders, sidecar rules, batch review.
 
+## Built 2026-09-21: time contract + location fixes (work package 1, mostly done)
+- **Contract** (`app/timeutil.py`): DB = naive UTC; API **always sends a trailing Z**, accepts
+  Z / offset / naive (= UTC), 400 on garbage. This fixes the reported 09:00-reads-back-as-08:00
+  bug at its cause (a naive ISO string is parsed by browsers as local time); reproduced and
+  confirmed in Node in Europe/London.
+- **Ingest:** embedded timestamps keep a UTC offset if present; a bare wall-clock time is the
+  recorder's local time, converted with `DEFAULT_RECORDER_TIMEZONE` (Europe/London) so BST is
+  right (a BWF 09:11:24 -> 08:11:24 UTC, verified through exiftool). Ambiguous/nonexistent DST
+  times resolve deterministically (documented in the module) — recorder profiles can flag them later.
+- **Dawarich:** range queries use epoch seconds; point timestamps are integer epochs (the old
+  `fromisoformat` would have crashed on the first real response); coordinates arrive as strings
+  and are now numbers. Verified live: the test file's moment returns 14 points with the pin
+  **62 m from Stoke station** (point density is low while stationary; the client returns the
+  same set at any page size).
+- **Location refresh:** replaces the track instead of appending (it duplicated points), and never
+  overwrites a **manual** location (the scheduled enrichment did too). Shared helper
+  `jobs/enrich.apply_location_result`.
+- **API:** stale/malformed tag ids now 400 (used to crash on commit); all API datetimes carry Z.
+- Verified: 35 unit tests + a 30-check live run (`tests/`, run on the container).
+- **Not done from WP1:** the "Refresh location" button on the detail screen (the API works),
+  and correcting the one real resource's date (the user's call). The existing resource's stored
+  time (08:11) is correct under the new contract; only its date (15th, not 17th) is wrong.
+
 ## Work packages (proposed order; each ends with something checkable)
 Items marked **[app]** are backend work the Android app (PLAN §19) needs;
 they are scheduled here on purpose, early, and each also benefits the web UI.

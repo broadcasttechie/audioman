@@ -102,8 +102,10 @@ function formatDuration(seconds) {
   return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0');
 }
 
-// Date only, on purpose: the timezone handling of captured_at is still an
-// open contract (PLAN.md 17.5), and a date is the least exposed to it.
+// Date only, on purpose. The API now sends real UTC instants (trailing Z, see
+// app/timeutil.py), so a time would be correct, but until exact/approximate/unknown
+// precision exists (PLAN 18.5c) a clock time on a guessed date would look more
+// certain than it is.
 function formatDate(iso) {
   if (!iso) return 'No timestamp';
   return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });

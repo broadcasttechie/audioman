@@ -20,6 +20,7 @@ import requests
 
 from config import Config
 from app.settings import get_config
+from app.timeutil import parse_to_utc_naive, to_utc_iso
 from .retry import call_with_retry
 
 PHOTO_PADDING = timedelta(minutes=5)
@@ -41,8 +42,8 @@ def fetch_photos_in_range(start, end, max_attempts=None):
             f"{immich_url}/api/search/metadata",
             headers={"x-api-key": get_config("IMMICH_API_KEY")},
             json={
-                "takenAfter": start.isoformat(),
-                "takenBefore": end.isoformat(),
+                "takenAfter": to_utc_iso(start),
+                "takenBefore": to_utc_iso(end),
                 "type": "IMAGE",
             },
             timeout=Config.HTTP_TIMEOUT_SECONDS,
@@ -72,9 +73,9 @@ def _extract_items(payload):
 
 
 def _parse_dt(raw):
-    from datetime import datetime
+    # Naive UTC, like every other datetime we store (app/timeutil.py).
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return parse_to_utc_naive(raw)
     except (ValueError, AttributeError):
         return None
 

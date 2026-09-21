@@ -35,6 +35,7 @@ from datetime import datetime
 
 from config import Config
 from app.extensions import db
+from app.timeutil import parse_exif_datetime
 from app.models import Resource, FileEvent
 
 TRUSTED_TIMESTAMP_TAGS = [
@@ -143,10 +144,11 @@ def _extract_timestamp(path):
         raw = data.get(tag)
         if not raw:
             continue
-        try:
-            return datetime.strptime(raw[:19], "%Y:%m:%d %H:%M:%S"), "embedded"
-        except ValueError:
-            continue
+        # Keeps a UTC offset if the tag has one; a bare wall-clock time is the
+        # recorder's local time (app/timeutil.py), stored as UTC.
+        parsed = parse_exif_datetime(raw, Config.DEFAULT_RECORDER_TIMEZONE)
+        if parsed:
+            return parsed, "embedded"
 
     return None, "manual"
 

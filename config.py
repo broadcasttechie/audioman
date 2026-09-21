@@ -41,6 +41,11 @@ class Config:
         "https://audioman.home.zamia.co.uk/api/settings/rclone/drive/oauth/callback",
     )
 
+    # --- Time contract (app/timeutil.py): the DB holds naive UTC. A wall-clock time read from a
+    # file with no offset is the recorder's local time; until per-recorder profiles exist it is
+    # interpreted in this IANA zone so British summer time is converted correctly. ---
+    DEFAULT_RECORDER_TIMEZONE = os.environ.get("DEFAULT_RECORDER_TIMEZONE", "Europe/London")
+
     # --- Inbox stability check ---
     MIN_AGE_MINUTES = int(os.environ.get("MIN_AGE_MINUTES", 5))
 

@@ -32,6 +32,32 @@ def _record_run(job_name, status, log_tail=""):
     db.session.commit()
 
 
+def apply_location_result(resource, track_points, pin):
+    """
+    Store a Dawarich result for one resource. Shared by the scheduled queue and the
+    manual refresh so both behave the same:
+      * the fetched track REPLACES any earlier one (a re-run must not duplicate points);
+      * a location the user set by hand is NEVER overwritten by an automatic lookup.
+    Returns {"pin_stored": bool, "kept_manual": bool}.
+    """
+    TrackPoint.query.filter_by(resource_id=resource.id).delete(synchronize_session=False)
+    for point in track_points:
+        db.session.add(TrackPoint(
+            resource_id=resource.id, recorded_at=point["timestamp"],
+            lat=point["lat"], lon=point["lon"],
+        ))
+
+    if not pin:
+        return {"pin_stored": False, "kept_manual": False}
+    loc = resource.location
+    if loc is not None and loc.source == "manual":
+        return {"pin_stored": False, "kept_manual": True}
+    loc = loc or Location(resource_id=resource.id)
+    loc.lat, loc.lon, loc.source = pin["lat"], pin["lon"], "dawarich-auto"
+    db.session.add(loc)
+    return {"pin_stored": True, "kept_manual": False}
+
+
 def enrich_locations():
     breaker = CircuitBreaker()
     checked, found = [], []
@@ -63,15 +89,7 @@ def enrich_locations():
         resource.dawarich_checked_at = datetime.utcnow()
         checked.append(resource.id)
 
-        for point in track_points:
-            db.session.add(TrackPoint(
-                resource_id=resource.id, recorded_at=point["timestamp"],
-                lat=point["lat"], lon=point["lon"],
-            ))
-        if pin:
-            loc = resource.location or Location(resource_id=resource.id)
-            loc.lat, loc.lon, loc.source = pin["lat"], pin["lon"], "dawarich-auto"
-            db.session.add(loc)
+        if apply_location_result(resource, track_points, pin)["pin_stored"]:
             found.append(resource.id)
 
         db.session.commit()

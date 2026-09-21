@@ -7,6 +7,7 @@ from .extensions import db
 from .models import Resource, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint
 from .settings import get_config, set_config, settings_snapshot, SECRET_KEYS
 from config import Config
+from .timeutil import parse_to_utc_naive, to_utc_iso
 
 bp = Blueprint("api", __name__)
 
@@ -104,12 +105,35 @@ def update_resource(resource_id):
             return jsonify({"error": "The NAS is not available, so nothing was changed.",
                             "detail": nas_reason}), 503
 
+    if "captured_at" in data:
+        # Time contract (app/timeutil.py): Z/offset strings become UTC; a string
+        # with no offset is taken as UTC; null clears it.
+        if data["captured_at"] is None:
+            data["captured_at"] = None
+        else:
+            try:
+                data["captured_at"] = parse_to_utc_naive(data["captured_at"])
+            except ValueError:
+                return jsonify({"error": "captured_at must be an ISO 8601 date-time, e.g. 2026-09-17T08:11:24Z"}), 400
+
+    tags_to_set = None
+    if "tags" in data:
+        if not isinstance(data["tags"], list) or not all(isinstance(t, str) for t in data["tags"]):
+            return jsonify({"error": "tags must be a list of tag id strings"}), 400
+        wanted = list(dict.fromkeys(data["tags"]))  # de-duplicated, order kept
+        found = {t.id: t for t in Tag.query.filter(Tag.id.in_(wanted)).all()} if wanted else {}
+        unknown = [t for t in wanted if t not in found]
+        if unknown:
+            # A stale id used to put None into r.tags and crash on commit.
+            return jsonify({"error": f"unknown tag id(s): {unknown}"}), 400
+        tags_to_set = [found[t] for t in wanted]
+
     for field in ("category", "project_id", "captured_at", "captured_at_source"):
         if field in data:
             setattr(r, field, data[field])
 
-    if "tags" in data:
-        r.tags = [Tag.query.get(tag_id) for tag_id in data["tags"]]
+    if tags_to_set is not None:
+        r.tags = tags_to_set
 
     if "location" in data:
         loc = r.location or Location(resource_id=r.id)
@@ -178,7 +202,7 @@ def _resource_to_dict(r: Resource):
         "category": r.category,
         "project_id": r.project_id,
         "status": r.status,
-        "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+        "captured_at": to_utc_iso(r.captured_at),
         "captured_at_source": r.captured_at_source,
         "duration_seconds": r.duration_seconds,
         "nas_path": r.nas_path,
@@ -222,7 +246,7 @@ def get_track(resource_id):
         {
             "lat": p.lat,
             "lon": p.lon,
-            "recorded_at": p.recorded_at.isoformat(),
+            "recorded_at": to_utc_iso(p.recorded_at),
             "offset_seconds": (p.recorded_at - resource.captured_at).total_seconds(),
         }
         for p in resource.track_points
@@ -345,7 +369,7 @@ def _clip_to_dict(c: Clip):
         "end_seconds": c.end_seconds,
         "label": c.label,
         "notes": c.notes,
-        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "created_at": to_utc_iso(c.created_at),
     }
 
 
@@ -425,8 +449,8 @@ def _export_to_dict(e: Export):
         "embed_metadata": e.embed_metadata,
         "status": e.status,
         "error_detail": e.error_detail,
-        "requested_at": e.requested_at.isoformat() if e.requested_at else None,
-        "completed_at": e.completed_at.isoformat() if e.completed_at else None,
+        "requested_at": to_utc_iso(e.requested_at),
+        "completed_at": to_utc_iso(e.completed_at),
         "download_url": f"/api/exports/{e.id}/download" if e.status == "success" else None,
     }
 
@@ -441,7 +465,7 @@ def list_photos(resource_id):
         {
             "id": p.id,
             "immich_asset_id": p.immich_asset_id,
-            "taken_at": p.taken_at.isoformat() if p.taken_at else None,
+            "taken_at": to_utc_iso(p.taken_at),
             # Frontend loads the actual image from these, not from Immich
             # directly — keeps the Immich API key server-side only.
             "thumbnail_url": f"/api/photos/{p.immich_asset_id}/thumbnail",
@@ -569,22 +593,16 @@ def refresh_location(resource_id):
     except ServiceUnavailable as e:
         return jsonify({"error": f"Dawarich unavailable, try again later: {e}"}), 503
 
-    from app.models import TrackPoint
-    for point in track_points:
-        db.session.add(TrackPoint(
-            resource_id=resource.id, recorded_at=point["timestamp"],
-            lat=point["lat"], lon=point["lon"],
-        ))
-    found = False
-    if pin:
-        loc = resource.location or Location(resource_id=resource.id)
-        loc.lat, loc.lon, loc.source = pin["lat"], pin["lon"], "dawarich-auto"
-        db.session.add(loc)
-        found = True
+    from jobs.enrich import apply_location_result
+    result = apply_location_result(resource, track_points, pin)
 
     resource.dawarich_checked_at = db.func.now()
     db.session.commit()
-    return jsonify({"found": found, "track_points": len(track_points)})
+    return jsonify({
+        "found": result["pin_stored"], "track_points": len(track_points),
+        # A location entered by hand is never replaced by an automatic lookup.
+        "kept_manual_location": result["kept_manual"],
+    })
 
 # --- Direct upload (e.g. a future companion mobile app) ---
 
@@ -745,7 +763,7 @@ def job_status(job_name):
     last_result = None
     if run:
         last_result = {
-            "last_run_at": run.last_run_at.isoformat() if run.last_run_at else None,
+            "last_run_at": to_utc_iso(run.last_run_at),
             "status": run.status,
             "log_tail": run.log_tail,
         }
@@ -760,7 +778,7 @@ def job_status(job_name):
             "status": current.status,
             "attempts": current.attempts,
             "max_attempts": current.max_attempts,
-            "next_attempt_at": current.next_attempt_at.isoformat() if current.next_attempt_at else None,
+            "next_attempt_at": to_utc_iso(current.next_attempt_at),
         }
 
     return jsonify({"job_name": job_name, "last_result": last_result, "queue": queue_info})

@@ -772,6 +772,11 @@ optional when a project is set is unchanged.
 
 ### 17.5 Time correctness: timezone/DST and per-recorder clock offset
 
+> **Implemented 2026-09-21 (the core contract):** naive UTC in the DB, API sends `Z`,
+> bare wall-clock times converted via a default recorder timezone, epoch handling for
+> Dawarich. Still to do from this section: per-recorder profiles with their own IANA zone
+> and signed clock offset, and the DST-ambiguity flag. See NEXT.md.
+
 **Asked for**: read timestamps with the right summer-time/timezone offset,
 and allow a precise per-recorder offset (e.g. a recorder known to run a
 few minutes off).
