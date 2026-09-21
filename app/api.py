@@ -62,6 +62,7 @@ def _filtered_resources(args, default_statuses=None):
             Resource.session.has(RecordingSession.name.icontains(q, autoescape=True)),
             Resource.project.has(Project.name.icontains(q, autoescape=True)),
             Resource.tags.any(Tag.name.icontains(q, autoescape=True)),
+            Resource.location.has(Location.place_name.icontains(q, autoescape=True)),
         ))
 
     return query
@@ -226,12 +227,25 @@ def _update_resource(r, data):
     if tags_to_set is not None:
         r.tags = tags_to_set
 
+    need_place_job = False
     if "location" in data:
+        from jobs.geocode import place_moved, reset_place
         loc = r.location or Location(resource_id=r.id)
-        loc.lat = data["location"].get("lat")
-        loc.lon = data["location"].get("lon")
+        new_lat, new_lon = data["location"].get("lat"), data["location"].get("lon")
+        if place_moved(loc.lat, loc.lon, new_lat, new_lon):
+            reset_place(loc)               # moved: the old name no longer applies, and a new one is looked up
+            need_place_job = True
+        loc.lat, loc.lon = new_lat, new_lon
         loc.source = data["location"].get("source", "manual")
         db.session.add(loc)
+
+    if "place_name" in data:
+        from jobs.geocode import set_manual_place
+        if data["place_name"] is not None and not isinstance(data["place_name"], str):
+            return {"error": "place_name must be text"}, 400
+        if r.location is None:
+            return {"error": "there is no location to name yet; set one first"}, 400
+        need_place_job = set_manual_place(r.location, data["place_name"]) or need_place_job
 
     if filing_now:
         if not r.category:
@@ -249,6 +263,9 @@ def _update_resource(r, data):
     if need_filing_job:
         from jobs.queue import enqueue
         enqueue("file-resources", triggered_by="filing")
+    if need_place_job:
+        from jobs.geocode import enqueue_geocode
+        enqueue_geocode()
     return _resource_to_dict(r), 200
 
 
@@ -399,7 +416,8 @@ def _resource_to_dict(r: Resource):
         "nas_path": r.nas_path,
         "tags": [t.name for t in r.tags],
         "location": (
-            {"lat": r.location.lat, "lon": r.location.lon, "source": r.location.source}
+            {"lat": r.location.lat, "lon": r.location.lon, "source": r.location.source,
+             "place_name": r.location.place_name, "place_source": r.location.place_source}
             if r.location else None
         ),
         # An existence check, not len(r.track_points): that would load every
@@ -466,6 +484,18 @@ def stream_audio(resource_id):
                 abort(503, description=f"NAS unavailable: {nas_reason}")
         abort(404, description="audio file not found on disk")
     return send_file(path, conditional=True)
+
+
+def _provider_or_error(kind):
+    """(function, None) for the configured provider, or (None, (body, status)) explaining why there isn't one."""
+    from jobs import providers
+    try:
+        fn = providers.get(kind)
+    except providers.UnknownProvider as e:
+        return None, ({"error": str(e)}, 400)
+    if fn is None:
+        return None, ({"error": f"This lookup is switched off ({providers.CONFIG_KEYS[kind]} is 'none')."}, 400)
+    return fn, None
 
 
 def _derived_response(r, kind):
@@ -676,14 +706,38 @@ def map_pins():
     located = base.join(Location, Location.resource_id == Resource.id).filter(Location.lat.isnot(None), Location.lon.isnot(None))
     total = located.count()
     rows = (located.with_entities(Resource.id, Resource.filename, Resource.category, Resource.captured_at, Resource.duration_seconds,
-                                  Location.lat, Location.lon, Location.source)
+                                  Location.lat, Location.lon, Location.source, Location.place_name)
             .order_by(Resource.captured_at.desc().nullslast(), Resource.id).limit(Config.MAP_MAX_PINS).all())
     unlocated = base.filter(~Resource.location.has()).count()
     return jsonify({
         "pins": [{"id": r.id, "filename": r.filename, "category": r.category, "captured_at": to_utc_iso(r.captured_at),
-                  "duration_seconds": r.duration_seconds, "lat": r.lat, "lon": r.lon, "source": r.source} for r in rows],
+                  "duration_seconds": r.duration_seconds, "lat": r.lat, "lon": r.lon, "source": r.source,
+                  "place_name": r.place_name} for r in rows],
         "total": total, "truncated": total > len(rows), "unlocated": unlocated,
     })
+
+
+@bp.post("/resources/<resource_id>/place/lookup")
+def lookup_place(resource_id):
+    """Look up the place name for this recording's location now (the button next to the name). Replaces a typed
+    name too, because it was asked for explicitly. 503 with the reason if Photon can't be reached."""
+    from jobs.geocode import apply_lookup
+    from jobs.retry import ServiceUnavailable
+    r = Resource.query.get_or_404(resource_id)
+    reverse, problem = _provider_or_error("geocoder")
+    if problem:
+        return jsonify(problem[0]), problem[1]
+    if r.location is None or r.location.lat is None:
+        return jsonify({"error": "this recording has no location to name"}), 400
+    try:
+        result = reverse(r.location.lat, r.location.lon, max_attempts=1)
+    except ServiceUnavailable as e:
+        return jsonify({"error": f"The place-name service is not available: {e}"}), 503
+    if result == "unconfigured":
+        return jsonify({"error": "No place-name service URL is set. Add one on the Settings page."}), 400
+    apply_lookup(r.location, result)
+    db.session.commit()
+    return jsonify({"place_name": r.location.place_name, "place_source": r.location.place_source, "found": bool(r.location.place_name)})
 
 
 @bp.get("/nas/status")
@@ -1007,10 +1061,12 @@ def refresh_photos(resource_id):
     waiting before even reporting failure) — a bounded quick failure
     beats a slow one for something the UI is waiting on.
     """
-    from jobs.immich import fetch_photos_for_recording
     from jobs.retry import ServiceUnavailable
 
     resource = Resource.query.get_or_404(resource_id)
+    fetch_photos_for_recording, problem = _provider_or_error("photos")
+    if problem:
+        return jsonify(problem[0]), problem[1]
     if not resource.captured_at:
         return jsonify({"error": "resource has no captured_at to search around"}), 400
     if resource.captured_at_precision != "exact":
@@ -1104,10 +1160,12 @@ def refresh_location(resource_id):
     automatic queue only ever looks at checked_at IS NULL, so it will
     never retry this on its own.
     """
-    from jobs.dawarich import fetch_track_and_pin
     from jobs.retry import ServiceUnavailable
 
     resource = Resource.query.get_or_404(resource_id)
+    fetch_track_and_pin, problem = _provider_or_error("location")
+    if problem:
+        return jsonify(problem[0]), problem[1]
     if not resource.captured_at:
         return jsonify({"error": "resource has no captured_at to search around"}), 400
     if resource.captured_at_precision != "exact":
@@ -1126,6 +1184,9 @@ def refresh_location(resource_id):
 
     resource.dawarich_checked_at = db.func.now()
     db.session.commit()
+    if result["pin_stored"]:
+        from jobs.geocode import enqueue_geocode
+        enqueue_geocode("location-refresh")
     return jsonify({
         "found": result["pin_stored"], "track_points": len(track_points),
         # A location entered by hand is never replaced by an automatic lookup.
@@ -1666,9 +1727,28 @@ def job_status(job_name):
 
 @bp.get("/settings")
 def get_settings():
+    from jobs import providers
     snapshot = settings_snapshot()
     snapshot["rclone_drive"] = _rclone_drive_status()
+    snapshot["providers"] = providers.describe()      # which service fills each role, and what else is registered
     return jsonify(snapshot)
+
+
+@bp.post("/settings/place-names/test")
+def test_place_names():
+    """Ask the configured geocoder to name a known place, so a wrong URL is found on the Settings page rather than
+    later. Uses the URL currently saved (save first if you just changed it)."""
+    from jobs.retry import ServiceUnavailable
+    reverse, problem = _provider_or_error("geocoder")
+    if problem:
+        return jsonify(problem[0]), problem[1]
+    try:
+        result = reverse(51.5074, -0.1278, max_attempts=1)     # Charing Cross, London
+    except ServiceUnavailable as e:
+        return jsonify({"ok": False, "error": str(e)}), 200
+    if result == "unconfigured":
+        return jsonify({"ok": False, "error": "No URL is set."}), 200
+    return jsonify({"ok": True, "example": result["label"] if result else None})
 
 
 @bp.put("/settings")

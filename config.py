@@ -95,6 +95,21 @@ class Config:
     MAP_MAX_ZOOM = int(os.environ.get("MAP_MAX_ZOOM", 19))
     MAP_MAX_PINS = 5000
 
+    # --- Swappable services (jobs/providers.py; PLAN 20): which implementation serves each role. A registered
+    # name, or "none" to switch the feature off. Only the current setup is implemented. ---
+    LOCATION_PROVIDER = os.environ.get("LOCATION_PROVIDER", "dawarich")
+    GEOCODER_PROVIDER = os.environ.get("GEOCODER_PROVIDER", "photon")
+    PHOTO_PROVIDER = os.environ.get("PHOTO_PROVIDER", "immich")
+
+    # --- Place names (jobs/photon.py): a self-hosted Photon geocoder (no key needed, nothing leaves the LAN).
+    # Editable on the Settings page. Photon answers on plain HTTP port 2322 here. ---
+    PHOTON_API_URL = os.environ.get("PHOTON_API_URL", "http://photon.home.zamia.co.uk:2322")
+    PLACE_LANG = "en"
+    PLACE_HOME_COUNTRY = "GB"              # a country name is added to the label only when it is elsewhere
+    PLACE_FALLBACK_RADIUS_KM = 5           # nothing within Photon's default ~1 km -> "near <nearest thing within this>"
+    PLACE_BATCH = 100                      # locations named per sweeper run
+    PLACE_MOVED_METRES = 50                # a location that moves less than this keeps its place name
+
     # --- Clip export (legacy path, superseded by Export workflow below —
     # kept only so an old export from before this change still resolves) ---
     CLIPS_EXPORT_DIR = os.environ.get("CLIPS_EXPORT_DIR", "/var/lib/audio-manager/clips")

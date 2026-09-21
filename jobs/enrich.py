@@ -19,8 +19,7 @@ from datetime import datetime
 from app.extensions import db
 from app.models import Resource, FileEvent, Location, TrackPoint, ResourcePhoto, JobRun
 from .retry import CircuitBreaker, ServiceUnavailable
-from .dawarich import fetch_track_and_pin
-from .immich import fetch_photos_for_recording
+from . import providers
 
 
 def _record_run(job_name, status, log_tail=""):
@@ -53,12 +52,31 @@ def apply_location_result(resource, track_points, pin):
     if loc is not None and loc.source == "manual":
         return {"pin_stored": False, "kept_manual": True}
     loc = loc or Location(resource_id=resource.id)
-    loc.lat, loc.lon, loc.source = pin["lat"], pin["lon"], "dawarich-auto"
+    from .geocode import place_moved, reset_place
+    if place_moved(loc.lat, loc.lon, pin["lat"], pin["lon"]):
+        reset_place(loc)          # a different place now: its old name no longer applies
+    loc.lat, loc.lon, loc.source = pin["lat"], pin["lon"], f"{providers.provider_name('location')}-auto"
     db.session.add(loc)
     return {"pin_stored": True, "kept_manual": False}
 
 
+def _provider_or_report(kind, job_name):
+    """The configured provider, or (None, result) after recording why the job did nothing."""
+    try:
+        fn = providers.get(kind)
+    except providers.UnknownProvider as e:
+        _record_run(job_name, "error", str(e))
+        return None, {"status": "error", "detail": str(e)}
+    if fn is None:
+        _record_run(job_name, "success", f"{providers.CONFIG_KEYS[kind]} is 'none': this lookup is switched off")
+        return None, {"status": "success", "checked": [], "found": [], "still_queued": 0, "detail": "provider disabled"}
+    return fn, None
+
+
 def enrich_locations():
+    fetch_track_and_pin, skipped = _provider_or_report("location", "enrich-locations")
+    if skipped:
+        return skipped
     breaker = CircuitBreaker()
     checked, found = [], []
 
@@ -95,6 +113,9 @@ def enrich_locations():
 
         db.session.commit()
 
+    if found:
+        from .geocode import enqueue_geocode
+        enqueue_geocode("enrich-locations")       # name the places just found
     remaining = len(candidates) - len(checked)
     status = "partial" if breaker.tripped else "success"
     _record_run(
@@ -105,6 +126,9 @@ def enrich_locations():
 
 
 def enrich_photos():
+    fetch_photos_for_recording, skipped = _provider_or_report("photos", "enrich-photos")
+    if skipped:
+        return skipped
     breaker = CircuitBreaker()
     checked, found = [], []
 

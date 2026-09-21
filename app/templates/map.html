@@ -60,7 +60,7 @@ function showPopup(x, y, members) {
 }
 
 function describe(p) {
-  return [labelOf(p.category), p.captured_at ? formatDate(p.captured_at) : 'no date', formatDuration(p.duration_seconds)].filter(Boolean).join(' · ');
+  return [p.place_name, labelOf(p.category), p.captured_at ? formatDate(p.captured_at) : 'no date', formatDuration(p.duration_seconds)].filter(Boolean).join(' · ');
 }
 
 // Screen positions -> clusters, every draw (cheap: a few thousand points at most).

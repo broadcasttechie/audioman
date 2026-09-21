@@ -13,6 +13,7 @@ from .enrich import enrich_locations, enrich_photos
 from .export import process_exports
 from .filing import file_resources
 from .previews import generate_previews
+from .geocode import geocode_locations
 
 JOB_REGISTRY.update({
     "drive-inbox-pull": drive_inbox_pull,
@@ -27,4 +28,5 @@ JOB_REGISTRY.update({
     "process-exports": process_exports,
     "file-resources": file_resources,
     "generate-previews": generate_previews,
+    "geocode-locations": geocode_locations,
 })

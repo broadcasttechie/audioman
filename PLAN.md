@@ -1567,3 +1567,43 @@ explicitly asked.**
 - The parked **private flag** (§18.5e) matters more once a phone can download:
   decide it before the app exposes downloads.
 
+## 20. Swappable services (providers)
+
+**Stated (2026-09-21):** the user's own setup (Dawarich for location, Photon for place names, Immich for photos) is
+what needs to work now, but the app should be able to use **alternative services, and alternative location sources**,
+chosen by configuration. Only the current setup is built; the mechanism is wired so another can be added without
+touching the code that uses it.
+
+### 20.1 The mechanism (built)
+`jobs/providers.py`: a registry `kind -> name -> "module:function"`, one function contract per kind, chosen by
+`LOCATION_PROVIDER`, `GEOCODER_PROVIDER`, `PHOTO_PROVIDER` (environment or the settings table; `none` switches the
+feature off; an unknown name is reported with the available choices, never guessed). Providers are imported lazily.
+Enrichment jobs, the manual "look up" endpoints and the place-name sweeper all go through it; the Settings page shows
+what is active. Contracts (details in the module docstring): **location** `fetch_track_and_pin(captured_at,
+duration_seconds, max_attempts)` -> `(track_points, pin)`; **geocoder** `reverse(lat, lon, max_attempts)` -> `None |
+{label, info, near} | "unconfigured"`; **photos** `fetch_photos_for_recording(...)`. Providers raise
+`ServiceUnavailable`/`ServiceRejected` for outages and misconfiguration, never for "nothing found"; all times are naive UTC.
+
+### 20.2 Built
+Dawarich (location), Photon (place names, `PHOTON_API_URL`, `http://photon.home.zamia.co.uk:2322`, no key), Immich (photos).
+Map tiles are already swappable (`MAP_TILE_URL`).
+
+### 20.3 Candidates (NOT built; the user is not familiar with the options, so these are suggestions)
+- **Location sources:** OwnTracks or Home Assistant device trackers (self-hosted, similar to Dawarich); a Google
+  Timeline / Takeout export; **GPX/FIT files** from a GPS watch or a hiking app, matched by time (could be uploaded per
+  session, useful when Dawarich has a gap); the **Android app's own GPS** sent with an upload (exact, PLAN 19); EXIF
+  GPS from companion photos. A recording could ask several in order (a fallback chain); today one provider is active.
+- **Geocoders:** Nominatim (self-hosted, or the public one with a cache and its 1-request-per-second limit), Pelias, an
+  offline GeoNames-based lookup (no service to run). Cloud geocoders would send coordinates outside the LAN.
+- **Photo sources:** PhotoPrism, or a watched folder read by EXIF time.
+
+### 20.4 Known gaps
+The photos contract still returns Immich-style asset ids and the photo thumbnail/original routes proxy to Immich, so a
+different photo service needs equivalents of those routes too. The columns `dawarich_checked_at` / `immich_checked_at`
+keep their old names (they mean "location/photo lookup done") to avoid a migration. There is no UI to pick a provider
+(environment/settings only), and only one provider per role can be active at a time.
+
+### 20.5 Adding one
+Write the function to the contract in a module under `jobs/`, add one line to `REGISTRY`, add a unit test with recorded
+responses and a live check, set the config key. Nothing else changes.
+

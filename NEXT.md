@@ -284,6 +284,27 @@ No migration was needed (the user confirmed only test data exists), so the chang
   heat/density mode. A recording whose date is approximate has no automatic location, so it appears only under
   "without a location" until one is chosen on the map.
 
+## Built 2026-09-21: place names (Photon) and swappable providers; play on click; a stuck-waveform bug
+- **Place names** from the user's own **Photon** (`http://photon.home.zamia.co.uk:2322`, plain HTTP on 2322, no key; the URL
+  is on the **Settings page** with a "Save and test" button). A location's name is looked up by a self-healing sweeper
+  (`geocode-locations`; queue = locations with no `place_checked_at`; timer every 15 min, plus a run whenever a location
+  appears or moves). Photon returns the *nearest feature*, so `format_place` builds a readable label: a postcode is never the
+  name, at most four parts, region only when short, the country only when abroad, and "near ..." when it had to widen the
+  search to 5 km. Real results: the test file = "Railway Station Platform 1, Station Road, Shelton, Stoke-on-Trent";
+  Wyre Forest = "Rock, Wyre Forest, Worcestershire"; nothing at all (mid-Atlantic) is remembered, not re-asked.
+  A **typed name is never overwritten**; clearing it re-queues a lookup; a location that moves **more than 50 m** loses its
+  name (GPS jitter doesn't). Shown on the recording page (editable, with a re-lookup button), Library cards, map popups,
+  and searchable. An unreachable Photon is reported (Home) and nothing is lost.
+- **Providers** (`jobs/providers.py`, PLAN 20): Dawarich, Photon and Immich now sit behind a registry chosen by
+  `LOCATION_PROVIDER` / `GEOCODER_PROVIDER` / `PHOTO_PROVIDER` (`none` = off, unknown names are reported). Only the current
+  setup is built; PLAN 20 lists candidates. The Settings page shows what is active.
+- **Play on click:** clicking the route on the map now seeks *and plays*. (Tapping the waveform still only seeks, so a clip
+  start/end can be placed with the position holding still; say if you want that to play too.)
+- **Bug fixed (reported by the user): the waveform stayed on "Generating the waveform".** The first load checked the
+  section was on the page before it had been attached, so it never fetched or retried. Reproduced with a new fake-DOM
+  harness (`tests/js/`), fixed, deployed. It shipped because earlier tests covered the parser but not the page flow.
+- Tests: 114 unit, 14 live suites, 20 Node checks (`tests/js/test_map.js`, `test_detail_page.js`).
+
 ## Fixed 2026-09-21 (found by a regression run and by looking at Home)
 - **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
 - **Stranded queue rows:** a worker restarted mid-job left its row `running`, which blocked new runs of that job for

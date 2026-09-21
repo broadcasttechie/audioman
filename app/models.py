@@ -192,6 +192,14 @@ class Location(db.Model):
     # dawarich-auto | manual | none
     source = db.Column(db.String, default="none")
 
+    # A readable name for the place ("Rock, Wyre Forest, Worcestershire"), looked up from the coordinates by the
+    # geocoder (jobs/photon.py) or typed by hand. place_checked_at NULL = queued for a lookup; it is set even when
+    # nothing was found, so an empty answer isn't asked again. Cleared when the location moves.
+    place_name = db.Column(db.String, nullable=True)
+    place_source = db.Column(db.String, nullable=True)     # photon | manual
+    place_info = db.Column(db.JSON, nullable=True)
+    place_checked_at = db.Column(db.DateTime, nullable=True)
+
 
 class TrackPoint(db.Model):
     """

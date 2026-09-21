@@ -33,6 +33,18 @@
 </section>
 
 <section>
+  <h2>Place names (Photon)</h2>
+  <p class="hint">Turns a recording's coordinates into a name like &ldquo;Rock, Wyre Forest, Worcestershire&rdquo;, using your own
+    <a href="https://github.com/komoot/photon" target="_blank" rel="noopener">Photon</a> geocoder, so nothing leaves your network.
+    Photon listens on port 2322.</p>
+  <label for="photon_url">API URL</label>
+  <input type="text" id="photon_url" placeholder="http://photon.home.zamia.co.uk:2322">
+  <div class="row"><button type="button" onclick="testPlaceNames()">Save and test</button></div>
+  <div id="photon-test" class="status"></div>
+  <p class="hint" id="providers-line"></p>
+</section>
+
+<section>
   <h2>Direct upload key <span id="upload-badge" class="badge"></span></h2>
   <p class="hint">Shared secret for <code>POST /api/ingest/upload</code> (e.g. a future phone app). Sent as the <code>X-Upload-Key</code> header.</p>
   <div class="row">
@@ -119,6 +131,12 @@ async function loadSettings() {
   document.getElementById('dawarich_url').value = s.DAWARICH_API_URL.value || '';
   setBadge('dawarich-badge', s.DAWARICH_API_KEY.is_set);
 
+  document.getElementById('photon_url').value = s.PHOTON_API_URL.value || '';
+  const pv = s.providers;
+  document.getElementById('providers-line').textContent = pv
+    ? `Services in use: locations \u2192 ${pv.location.active}, place names \u2192 ${pv.geocoder.active}, photos \u2192 ${pv.photos.active}. ` +
+      `Others can be plugged in later by setting ${pv.location.setting}, ${pv.geocoder.setting} or ${pv.photos.setting}; only these are built so far.`
+    : '';
   document.getElementById('immich_url').value = s.IMMICH_API_URL.value || '';
   setBadge('immich-badge', s.IMMICH_API_KEY.is_set);
 
@@ -270,10 +288,25 @@ function generateUploadKey() {
   document.getElementById('upload_key').type = 'text';
 }
 
+async function testPlaceNames() {
+  const out = document.getElementById('photon-test');
+  out.textContent = 'Testing\u2026'; out.className = 'status';
+  try {
+    const saved = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ PHOTON_API_URL: document.getElementById('photon_url').value }) });
+    if (!saved.ok) throw new Error((await saved.json()).error || saved.statusText);
+    const r = await fetch('/api/settings/place-names/test', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    if (d.ok) { out.textContent = 'Working. Charing Cross, London is named \u201c' + (d.example || '(no name)') + '\u201d.'; out.className = 'status ok'; }
+    else { out.textContent = 'Not working: ' + d.error; out.className = 'status err'; }
+  } catch (e) { out.textContent = 'Error: ' + e.message; out.className = 'status err'; }
+}
+
 async function saveSettings() {
   const body = {
     DAWARICH_API_URL: document.getElementById('dawarich_url').value,
     DAWARICH_API_KEY: document.getElementById('dawarich_key').value,
+    PHOTON_API_URL: document.getElementById('photon_url').value,
     IMMICH_API_URL: document.getElementById('immich_url').value,
     IMMICH_API_KEY: document.getElementById('immich_key').value,
     UPLOAD_API_KEY: document.getElementById('upload_key').value,

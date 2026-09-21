@@ -222,6 +222,7 @@ function buildCard(res) {
   const bits = [formatDate(res.captured_at)];
   if (res.category) bits.push(res.category);
   if (res.project_id && projectsById[res.project_id]) bits.push(projectsById[res.project_id].name);
+  if (res.location && res.location.place_name) bits.push(res.location.place_name);
   if (res.status !== 'filed') bits.push(res.status);
   a.append(top, el('div', { class: 'card-meta' }, [bits.join(' · ')]));
 

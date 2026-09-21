@@ -482,6 +482,7 @@ function buildLocationSection(resource) {
   const loc = resource.location;
   section.append(el('h2', {}, ['Location ', loc ? el('span', { class: 'badge unset' }, [loc.source]) : '']));
 
+  if (loc) section.append(buildPlaceRow(resource));
   const picker = { active: false };
   const status = el('p', { class: 'hint' }, ['']);
   const holder = el('div');
@@ -541,6 +542,27 @@ function buildLocationSection(resource) {
   row.append(latInput, lonInput, saveBtn);
   section.append(row);
   return section;
+}
+
+// The name of the place, looked up from the coordinates (Photon) or typed by hand. Typing replaces the looked-up
+// name and it is then never overwritten; clearing it asks for a fresh lookup.
+function buildPlaceRow(resource) {
+  const loc = resource.location;
+  const input = el('input', { type: 'text', placeholder: 'Place name (looked up automatically)', value: loc.place_name || '' });
+  const badge = el('span', { class: 'badge unset' }, [loc.place_source === 'manual' ? 'typed' : (loc.place_name ? 'auto' : 'not named yet')]);
+  input.addEventListener('change', async () => {
+    try { renderDetail(await patchResource({ place_name: input.value })); } catch (e) { alert('Error: ' + e.message); }
+  });
+  const again = el('button', { type: 'button', title: 'Look the name up again', 'aria-label': 'Look up the place name again' }, ['↻']);
+  again.addEventListener('click', async () => {
+    if (loc.place_source === 'manual' && !confirm('Replace the name you typed with a looked-up one?')) return;
+    again.disabled = true;
+    try {
+      await apiJson('POST', `/api/resources/${resource.id}/place/lookup`, {});
+      renderDetail(await (await fetch(`/api/resources/${resource.id}`)).json());
+    } catch (e) { alert(e.message); again.disabled = false; }
+  });
+  return el('div', { class: 'row', style: 'margin-bottom:0.4rem' }, [input, again, badge]);
 }
 
 async function mountTrackMap(holder, resource, picker, status, follow, followLabel, ctl) {
