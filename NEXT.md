@@ -194,6 +194,19 @@ No migration was needed (the user confirmed only test data exists), so the chang
   background filing, name clash fails safely and re-files after a session is chosen.
 - **Still to build for the archive import:** batch review actions (next), and the NAS backup on the user's side.
 
+## Built 2026-09-21: batch review (work package 5, second half)
+- **`POST /api/resources/batch`** `{ids, patch, tags_add}`: one change applied to up to 500 recordings; each item
+  is applied and committed on its own (a failure rolls that item back completely and is reported with its reason;
+  the rest continue). `tags_add` adds to existing tags; `use_suggested_date` uses each file's own suggestion;
+  `status: filed` queues the background filing job. Per-file fields (notes, track_label, role, derived_from_id)
+  are refused. The single-file PATCH and the batch share one function (`_update_resource`), so the rules can't drift.
+- **Review queue UI:** a checkbox on every card, "Select all", and a bar above the tab bar to set category, project,
+  session (existing, or "+ New session" created with a client id), tags, "Use suggested dates" (only sent for files
+  that have one) and "Apply & file" (only files with a category). Shows how many are being copied and links to the
+  failed ones. JS syntax-checked and the page serves; **not clicked through in a browser.**
+- **Regression suite:** the live checks are kept in `tests/live/` (README explains how to run them on the
+  container). Unit tests: 74. All live checks pass after the refactor.
+
 ## Work packages (proposed order; each ends with something checkable)
 Items marked **[app]** are backend work the Android app (PLAN §19) needs;
 they are scheduled here on purpose, early, and each also benefits the web UI.

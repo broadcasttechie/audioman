@@ -106,14 +106,25 @@ def get_resource(resource_id):
 @bp.patch("/resources/<resource_id>")
 def update_resource(resource_id):
     r = Resource.query.get_or_404(resource_id)
-    data = request.get_json() or {}
+    body, status = _update_resource(r, request.get_json() or {})
+    if status >= 400:
+        db.session.rollback()
+    return jsonify(body), status
+
+
+def _update_resource(r, data):
+    """
+    Apply a PATCH to one resource. Returns (body_dict, http_status). Shared by the single-resource
+    PATCH and the batch endpoint (the review queue's multi-select) so both obey the same rules.
+    On an error status nothing has been committed; callers roll back the session.
+    """
 
     if "category" in data and data["category"] not in (None, *Config.CATEGORIES):
-        return jsonify({"error": f"category must be one of {Config.CATEGORIES}"}), 400
+        return {"error": f"category must be one of {Config.CATEGORIES}"}, 400
 
     if "status" in data and data["status"] not in ("pending-review", "filed", "archived"):
         # 'filing' and 'failed' are set by the system (jobs/filing.py), never by a client.
-        return jsonify({"error": "status must be 'pending-review', 'filed' or 'archived'"}), 400
+        return {"error": "status must be 'pending-review', 'filed' or 'archived'"}, 400
     filing_now = data.get("status") == "filed" and r.status not in ("filed", "filing")
     need_filing_job = False
     if filing_now:
@@ -122,13 +133,13 @@ def update_resource(resource_id):
         from jobs.nas import nas_status
         nas_ok, nas_reason = nas_status()
         if not nas_ok:
-            return jsonify({"error": "The NAS is not available, so nothing was changed.",
-                            "detail": nas_reason}), 503
+            return {"error": "The NAS is not available, so nothing was changed.",
+                            "detail": nas_reason}, 503
 
     if data.get("use_suggested_date"):
         # Confirm the date a "suggest" recorder profile read from the filename.
         if not r.suggested_captured_at:
-            return jsonify({"error": "this recording has no suggested date"}), 400
+            return {"error": "this recording has no suggested date"}, 400
         data["captured_at"] = r.suggested_captured_at
         data["captured_at_source"] = "filename"
         # A date-only filename can only ever be an approximate date.
@@ -136,8 +147,8 @@ def update_resource(resource_id):
                         "exact" if (r.filename_info or {}).get("time_known", True) else "approximate")
 
     if "captured_at_precision" in data and data["captured_at_precision"] not in ("exact", "approximate"):
-        return jsonify({"error": "captured_at_precision must be 'exact' or 'approximate' "
-                                 "(clear captured_at instead to make the date unknown)"}), 400
+        return {"error": "captured_at_precision must be 'exact' or 'approximate' "
+                                 "(clear captured_at instead to make the date unknown)"}, 400
 
     if "captured_at" in data:
         # Time contract (app/timeutil.py): Z/offset strings become UTC; a string
@@ -148,23 +159,23 @@ def update_resource(resource_id):
             try:
                 data["captured_at"] = parse_to_utc_naive(data["captured_at"])
             except ValueError:
-                return jsonify({"error": "captured_at must be an ISO 8601 date-time, e.g. 2026-09-17T08:11:24Z"}), 400
+                return {"error": "captured_at must be an ISO 8601 date-time, e.g. 2026-09-17T08:11:24Z"}, 400
 
     tags_to_set = None
     if "tags" in data:
         if not isinstance(data["tags"], list) or not all(isinstance(t, str) for t in data["tags"]):
-            return jsonify({"error": "tags must be a list of tag id strings"}), 400
+            return {"error": "tags must be a list of tag id strings"}, 400
         wanted = list(dict.fromkeys(data["tags"]))  # de-duplicated, order kept
         found = {t.id: t for t in Tag.query.filter(Tag.id.in_(wanted)).all()} if wanted else {}
         unknown = [t for t in wanted if t not in found]
         if unknown:
             # A stale id used to put None into r.tags and crash on commit.
-            return jsonify({"error": f"unknown tag id(s): {unknown}"}), 400
+            return {"error": f"unknown tag id(s): {unknown}"}, 400
         tags_to_set = [found[t] for t in wanted]
 
     structure = _resolve_structure(r, data)
-    if isinstance(structure, tuple) and len(structure) == 2 and hasattr(structure[0], "status_code"):
-        return structure  # (error response, status)
+    if isinstance(structure, tuple):
+        return structure  # (error body, status)
 
     old_date, old_precision = r.captured_at, r.captured_at_precision
     for field in ("category", "captured_at_source"):
@@ -184,7 +195,7 @@ def update_resource(resource_id):
         r.suggested_captured_at = None
     elif "captured_at_precision" in data:
         if r.captured_at is None:
-            return jsonify({"error": "there is no date to mark as exact or approximate"}), 400
+            return {"error": "there is no date to mark as exact or approximate"}, 400
         r.captured_at_precision = data["captured_at_precision"]
 
     if (r.captured_at, r.captured_at_precision) != (old_date, old_precision):
@@ -205,9 +216,9 @@ def update_resource(resource_id):
 
     if filing_now:
         if not r.category:
-            return jsonify({"error": "category is required before filing"}), 400
+            return {"error": "category is required before filing"}, 400
         if not r.staging_path or not os.path.exists(r.staging_path):
-            return jsonify({"error": "the file is no longer in staging, so it can't be filed"}), 409
+            return {"error": "the file is no longer in staging, so it can't be filed"}, 409
         # The copy runs in the background (jobs/filing.py): it can take longer than a web request.
         r.status = "filing"
         r.failure_stage = r.failure_detail = None
@@ -219,7 +230,51 @@ def update_resource(resource_id):
     if need_filing_job:
         from jobs.queue import enqueue
         enqueue("file-resources", triggered_by="filing")
-    return jsonify(_resource_to_dict(r))
+    return _resource_to_dict(r), 200
+
+
+@bp.post("/resources/batch")
+def batch_update_resources():
+    """
+    Apply one change to many resources at once (the review queue's multi-select).
+    Body: {"ids": [...], "patch": {...same fields as PATCH...}, "tags_add": [tag ids]}.
+    `tags_add` adds to each resource's existing tags instead of replacing them; `use_suggested_date`
+    applies each resource's own filename suggestion. Each resource is applied on its own, so one
+    that can't take the change (no suggestion, unknown session, NAS down...) doesn't stop the rest;
+    the response lists every outcome. `status: "filed"` queues the background filing job.
+    Fields that only make sense per file (notes, track_label, derived_from_id, role) are refused.
+    """
+    data = request.get_json() or {}
+    ids, patch, tags_add = data.get("ids"), data.get("patch") or {}, data.get("tags_add")
+    if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(isinstance(i, str) for i in ids):
+        return jsonify({"error": "ids must be a list of 1 to 500 resource ids"}), 400
+    if not isinstance(patch, dict):
+        return jsonify({"error": "patch must be an object"}), 400
+    forbidden = [k for k in ("notes", "track_label", "derived_from_id", "role") if k in patch]
+    if forbidden:
+        return jsonify({"error": f"{forbidden} can only be set on one file at a time"}), 400
+    if tags_add is not None and (not isinstance(tags_add, list) or not all(isinstance(t, str) for t in tags_add)):
+        return jsonify({"error": "tags_add must be a list of tag id strings"}), 400
+    if not patch and not tags_add:
+        return jsonify({"error": "nothing to apply"}), 400
+
+    results = []
+    for rid in dict.fromkeys(ids):
+        r = db.session.get(Resource, rid)
+        if r is None:
+            results.append({"id": rid, "ok": False, "status": 404, "error": "not found"})
+            continue
+        item = dict(patch)
+        if tags_add:
+            item["tags"] = list(dict.fromkeys([t.id for t in r.tags] + tags_add))
+        body, status = _update_resource(r, item)
+        if status >= 400:
+            db.session.rollback()
+            results.append({"id": rid, "ok": False, "status": status, "error": body.get("error"), "detail": body.get("detail")})
+        else:
+            results.append({"id": rid, "ok": True, "status": status, "resource_status": body.get("status")})
+    ok = sum(1 for x in results if x["ok"])
+    return jsonify({"results": results, "ok_count": ok, "error_count": len(results) - ok})
 
 
 ROLES = ("original", "edit", "export", "sidecar", "project-file")
@@ -228,7 +283,7 @@ ROLES = ("original", "edit", "export", "sidecar", "project-file")
 def _resolve_structure(r, data):
     """
     Validate the project / session / role / notes part of a PATCH. Returns None if the request
-    doesn't touch them, a dict of values to apply, or (error_response, status).
+    doesn't touch them, a dict of values to apply, or (error_body, status).
 
     Rules: a file's project is always its session's project; giving a session sets the project
     from it (and a project that contradicts the session is refused); moving a file to another
@@ -242,15 +297,15 @@ def _resolve_structure(r, data):
 
     session_id, project_id = r.session_id, r.project_id
     if "project_id" in data and data["project_id"] is not None and db.session.get(Project, data["project_id"]) is None:
-        return jsonify({"error": "unknown project"}), 400
+        return {"error": "unknown project"}, 400
 
     if data.get("session_id") is not None:
         session = db.session.get(RecordingSession, data["session_id"])
         if session is None:
-            return jsonify({"error": "unknown session"}), 400
+            return {"error": "unknown session"}, 400
         if "project_id" in data and data["project_id"] != session.project_id:
-            return jsonify({"error": "that session belongs to a different project; change the session "
-                                     "or clear it when moving the file to another project"}), 400
+            return {"error": "that session belongs to a different project; change the session "
+                                     "or clear it when moving the file to another project"}, 400
         session_id, project_id = session.id, session.project_id
     else:
         if "session_id" in data:              # explicitly cleared
@@ -263,19 +318,19 @@ def _resolve_structure(r, data):
 
     if "role" in data:
         if data["role"] not in ROLES:
-            return jsonify({"error": f"role must be one of {list(ROLES)}"}), 400
+            return {"error": f"role must be one of {list(ROLES)}"}, 400
         out["role"] = data["role"]
     if "derived_from_id" in data:
         target = data["derived_from_id"]
         if target is not None:
             if target == r.id:
-                return jsonify({"error": "a file can't be an edit of itself"}), 400
+                return {"error": "a file can't be an edit of itself"}, 400
             seen, cursor = {r.id}, db.session.get(Resource, target)
             if cursor is None:
-                return jsonify({"error": "unknown file for derived_from_id"}), 400
+                return {"error": "unknown file for derived_from_id"}, 400
             while cursor is not None:  # no loops: walk up the chain from the proposed original
                 if cursor.id in seen:
-                    return jsonify({"error": "that would make the edits form a loop"}), 400
+                    return {"error": "that would make the edits form a loop"}, 400
                 seen.add(cursor.id)
                 cursor = cursor.derived_from
             if data.get("role", r.role) == "original":
@@ -284,7 +339,7 @@ def _resolve_structure(r, data):
     for field in ("notes", "track_label"):
         if field in data:
             if data[field] is not None and not isinstance(data[field], str):
-                return jsonify({"error": f"{field} must be text"}), 400
+                return {"error": f"{field} must be text"}, 400
             out[field] = data[field]
     return out
 

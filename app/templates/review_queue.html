@@ -2,12 +2,18 @@
 {% block title_suffix %} — Review{% endblock %}
 {% block head %}
 <style>
-  .queue-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 1rem; }
+  .queue-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.5rem; gap: 0.5rem; flex-wrap: wrap; }
   .queue-count { font-size: 0.85rem; opacity: 0.7; }
+  .queue-sub { font-size: 0.85rem; opacity: 0.8; margin-bottom: 0.75rem; }
+  .queue-sub a { color: inherit; }
+  .selectall { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .card-row { display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.75rem; }
+  .card-row input.pick { width: 1.3rem; height: 1.3rem; margin-top: 1rem; flex: none; }
   .card {
-    display: block; border: 1px solid #8884; border-radius: 8px; padding: 0.9rem 1rem;
-    margin-bottom: 0.75rem; text-decoration: none; color: inherit;
+    display: block; flex: 1; min-width: 0; border: 1px solid #8884; border-radius: 8px; padding: 0.9rem 1rem;
+    text-decoration: none; color: inherit;
   }
+  .card-row.sel .card { border-color: #3a7bd5; background: #3a7bd511; }
   .card:active { background: #8881; }
   .card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
   .card-filename { font-weight: 600; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -16,6 +22,19 @@
   .card-icons { display: flex; gap: 0.5rem; }
   .empty-state { text-align: center; padding: 3rem 1rem; opacity: 0.7; }
   .empty-state .icon { font-size: 2.5rem; display: block; margin-bottom: 0.5rem; }
+  #queue-list.has-bar { padding-bottom: 14rem; }
+  /* Batch bar: sits just above the mobile tab bar; at the bottom edge on wide screens (tab bar is on top). */
+  #batch-bar {
+    position: fixed; left: 0; right: 0; bottom: calc(var(--nav-size) + env(safe-area-inset-bottom)); z-index: 9;
+    background: Canvas; color: CanvasText; border-top: 1px solid #8886; padding: 0.6rem 1rem 0.7rem;
+    box-shadow: 0 -4px 12px #0003; display: none;
+  }
+  #batch-bar.show { display: block; }
+  @media (min-width: 720px) { #batch-bar { bottom: 0; } }
+  #batch-bar .row { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; margin-top: 0.4rem; }
+  #batch-bar select, #batch-bar input[type=text] { flex: 1 1 8rem; min-width: 0; width: auto; }
+  #batch-bar .count { font-weight: 600; }
+  #batch-status { font-size: 0.8rem; margin-top: 0.4rem; white-space: pre-wrap; }
 </style>
 {% endblock %}
 {% block content %}
@@ -23,7 +42,10 @@
   <h1>Review Queue</h1>
   <span class="queue-count" id="queue-count"></span>
 </div>
+<div class="queue-sub" id="queue-sub"></div>
+<label class="selectall" id="selectall-row" hidden><input type="checkbox" id="selectall"> Select all</label>
 <div id="queue-list" class="status">Loading...</div>
+<div id="batch-bar" aria-label="Apply to the selected recordings"></div>
 {% endblock %}
 {% block scripts %}
 <script>
@@ -47,62 +69,246 @@ function formatCapturedAt(iso, source, precision) {
   return label;
 }
 
+function el(tag, props = {}, children = []) {
+  const e = document.createElement(tag);
+  Object.entries(props).forEach(([k, v]) => {
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  });
+  children.forEach(c => e.append(c));   // append(): never innerHTML for anything that came from a filename
+  return e;
+}
+
+async function apiJson(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+let items = [];                 // the resources on screen
+const selected = new Set();
+let categories = [], projects = [], sessions = [], tags = [];
+
 async function loadQueue() {
   const listEl = document.getElementById('queue-list');
   const countEl = document.getElementById('queue-count');
   try {
-    const r = await fetch('/api/resources?status=pending-review&limit=200');
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || r.statusText);
-
+    const data = await apiJson('GET', '/api/resources?status=pending-review&limit=200');
+    items = data.resources;
     countEl.textContent = data.total === 1 ? '1 to review' : data.total + ' to review';
+    loadSubline();
 
-    if (data.resources.length === 0) {
-      listEl.className = '';
-      listEl.innerHTML = '<div class="empty-state"><span class="icon">🎉</span>Nothing to review right now.</div>';
-      return;
-    }
+    for (const id of [...selected]) if (!items.some(r => r.id === id)) selected.delete(id);
+    document.getElementById('selectall-row').hidden = items.length === 0;
 
     listEl.className = '';
-    listEl.innerHTML = '';
-    for (const res of data.resources) {
-      const icons = [];
-      if (res.location || res.has_track) icons.push('📍');
-      if (res.has_photos) icons.push('📷');
-      if (!res.captured_at) icons.push('❓');
-
-      const a = document.createElement('a');
-      a.className = 'card';
-      a.href = '/review/' + res.id;
-
-      const top = document.createElement('div');
-      top.className = 'card-top';
-      const filenameSpan = document.createElement('span');
-      filenameSpan.className = 'card-filename';
-      filenameSpan.textContent = res.filename;  // untrusted -- textContent, never innerHTML
-      const durationSpan = document.createElement('span');
-      durationSpan.className = 'card-duration';
-      durationSpan.textContent = formatDuration(res.duration_seconds);
-      top.append(filenameSpan, durationSpan);
-
-      const meta = document.createElement('div');
-      meta.className = 'card-meta';
-      const capturedSpan = document.createElement('span');
-      capturedSpan.textContent = res.captured_at ? formatCapturedAt(res.captured_at, res.captured_at_source, res.captured_at_precision) : (res.suggested_captured_at ? 'Date suggested from filename \u2014 confirm' : 'No timestamp');
-      const iconsSpan = document.createElement('span');
-      iconsSpan.className = 'card-icons';
-      iconsSpan.textContent = icons.join(' ');
-      meta.append(capturedSpan, iconsSpan);
-
-      a.append(top, meta);
-      listEl.append(a);
+    listEl.replaceChildren();
+    if (items.length === 0) {
+      const empty = el('div', { class: 'empty-state' }, [el('span', { class: 'icon' }, ['\u{1F389}']), 'Nothing to review right now.']);
+      listEl.append(empty);
+      renderBar();
+      return;
     }
+    for (const res of items) listEl.append(buildRow(res));
+    renderBar();
   } catch (e) {
     listEl.textContent = 'Error: ' + e.message;
     listEl.className = 'status err';
   }
 }
 
-loadQueue();
+async function loadSubline() {
+  const sub = document.getElementById('queue-sub');
+  try {
+    const [filing, failed] = await Promise.all([
+      apiJson('GET', '/api/resources?status=filing&limit=1'), apiJson('GET', '/api/resources?status=failed&limit=1'),
+    ]);
+    const bits = [];
+    if (filing.total) bits.push(`${filing.total} being copied to the NAS`);
+    sub.replaceChildren(bits.join(' \u00b7 '));
+    if (failed.total) {
+      if (bits.length) sub.append(' \u00b7 ');
+      sub.append(el('a', { href: '/library?status=failed' }, [`${failed.total} failed`]));
+    }
+  } catch (e) { sub.textContent = ''; }
+}
+
+function buildRow(res) {
+  const icons = [];
+  if (res.location || res.has_track) icons.push('\u{1F4CD}');
+  if (res.has_photos) icons.push('\u{1F4F7}');
+  if (!res.captured_at) icons.push('\u2753');
+
+  const pick = el('input', { type: 'checkbox', class: 'pick', 'aria-label': 'Select ' + res.filename });
+  pick.checked = selected.has(res.id);
+  const row = el('div', { class: 'card-row' + (pick.checked ? ' sel' : '') });
+  pick.addEventListener('change', () => {
+    if (pick.checked) selected.add(res.id); else selected.delete(res.id);
+    row.classList.toggle('sel', pick.checked);
+    renderBar();
+  });
+
+  const top = el('div', { class: 'card-top' }, [
+    el('span', { class: 'card-filename' }, [res.filename]),      // untrusted text: append(), not innerHTML
+    el('span', { class: 'card-duration' }, [formatDuration(res.duration_seconds)]),
+  ]);
+  const captured = res.captured_at
+    ? formatCapturedAt(res.captured_at, res.captured_at_source, res.captured_at_precision)
+    : (res.suggested_captured_at ? 'Date suggested from filename \u2014 confirm' : 'No timestamp');
+  const meta = el('div', { class: 'card-meta' }, [el('span', {}, [captured]), el('span', { class: 'card-icons' }, [icons.join(' ')])]);
+  const link = el('a', { class: 'card', href: '/review/' + res.id }, [top, meta]);
+  row.append(pick, link);
+  return row;
+}
+
+document.getElementById('selectall').addEventListener('change', (ev) => {
+  if (ev.target.checked) items.forEach(r => selected.add(r.id)); else selected.clear();
+  document.querySelectorAll('#queue-list .card-row').forEach((row, i) => {
+    const on = selected.has(items[i].id);
+    row.querySelector('input.pick').checked = on;
+    row.classList.toggle('sel', on);
+  });
+  renderBar();
+});
+
+// ---------------- batch bar ----------------
+let barBuilt = false, catSel, projSel, sessSel, newSessInput, tagInput, statusEl, countEl;
+
+function fillSelect(select, first, rows, labelOf) {
+  select.replaceChildren(el('option', { value: '' }, [first]));
+  rows.forEach(r => select.append(el('option', { value: r.id === undefined ? r.slug : r.id }, [labelOf(r)])));
+}
+
+function refreshSessionOptions() {
+  const proj = projSel.value === '__none__' ? null : (projSel.value || undefined);
+  sessSel.replaceChildren(el('option', { value: '' }, ['Session\u2026 (unchanged)']));
+  if (proj !== undefined) {
+    sessions.filter(s => (s.project_id || null) === proj).forEach(s => sessSel.append(el('option', { value: s.id }, [s.name])));
+    sessSel.append(el('option', { value: '__new__' }, ['+ New session\u2026']));
+    sessSel.disabled = false;
+  } else {
+    sessSel.disabled = true;   // pick a project (or "no project") first: a session lives inside one
+  }
+  newSessInput.hidden = true;
+}
+
+function buildBar() {
+  const bar = document.getElementById('batch-bar');
+  countEl = el('span', { class: 'count' }, ['']);
+  catSel = el('select', { 'aria-label': 'Category' });
+  projSel = el('select', { 'aria-label': 'Project' });
+  sessSel = el('select', { 'aria-label': 'Session' });
+  newSessInput = el('input', { type: 'text', placeholder: 'New session name, e.g. 2026-09-15 Night 2' });
+  newSessInput.hidden = true;
+  tagInput = el('input', { type: 'text', placeholder: 'Add tags (comma separated)', list: 'batch-tags' });
+  const datalist = el('datalist', { id: 'batch-tags' });
+  tags.forEach(t => datalist.append(el('option', { value: t.name })));
+  statusEl = el('div', { id: 'batch-status' });
+
+  fillSelect(catSel, 'Category\u2026 (unchanged)', categories.map(c => ({ id: c.slug, label: c.label })), c => c.label);
+  projSel.replaceChildren(el('option', { value: '' }, ['Project\u2026 (unchanged)']), el('option', { value: '__none__' }, ['\u2014 no project \u2014']));
+  projects.forEach(p => projSel.append(el('option', { value: p.id }, [p.name])));
+  projSel.addEventListener('change', refreshSessionOptions);
+  sessSel.addEventListener('change', () => { newSessInput.hidden = sessSel.value !== '__new__'; });
+  refreshSessionOptions();
+
+  const btn = (label, onclick, cls = '') => el('button', { type: 'button', class: cls, onclick }, [label]);
+  const r1 = el('div', { class: 'row' }, [countEl, btn('Clear', () => { selected.clear(); loadQueue(); })]);
+  const r2 = el('div', { class: 'row' }, [catSel, projSel, sessSel]);
+  const r3 = el('div', { class: 'row' }, [newSessInput, tagInput, datalist]);
+  const r4 = el('div', { class: 'row' }, [
+    btn('Apply', () => applyBatch(false)), btn('Use suggested dates', useSuggestedDates), btn('Apply & file', () => applyBatch(true), 'ready'),
+  ]);
+  bar.append(r1, r2, r3, r4, statusEl);
+  barBuilt = true;
+}
+
+function renderBar() {
+  const bar = document.getElementById('batch-bar');
+  const list = document.getElementById('queue-list');
+  if (!barBuilt) buildBar();
+  const n = selected.size;
+  bar.classList.toggle('show', n > 0);
+  list.classList.toggle('has-bar', n > 0);
+  countEl.textContent = n === 1 ? '1 selected' : n + ' selected';
+  document.getElementById('selectall').checked = items.length > 0 && n === items.length;
+}
+
+function report(text, isError) {
+  statusEl.textContent = text;
+  statusEl.className = 'status ' + (isError ? 'err' : 'ok');
+}
+
+async function runBatch(ids, patch, tagsAdd) {
+  const body = { ids, patch };
+  if (tagsAdd && tagsAdd.length) body.tags_add = tagsAdd;
+  return apiJson('POST', '/api/resources/batch', body);
+}
+
+async function applyBatch(file) {
+  try {
+    const patch = {};
+    let ids = [...selected];
+    if (catSel.value) patch.category = catSel.value;
+    if (projSel.value === '__none__') patch.project_id = null;
+    else if (projSel.value) patch.project_id = projSel.value;
+
+    let sessionId = sessSel.value;
+    if (sessionId === '__new__') {
+      const name = newSessInput.value.trim();
+      if (!name) return report('Type a name for the new session.', true);
+      const body = { name, project_id: projSel.value === '__none__' ? null : (projSel.value || null) };
+      if (window.crypto && crypto.randomUUID) body.id = crypto.randomUUID();   // a retry can't create it twice
+      const created = await apiJson('POST', '/api/sessions', body);
+      sessions.push(created);
+      sessionId = created.id;
+    }
+    if (sessionId) patch.session_id = sessionId;
+
+    const tagNames = tagInput.value.split(',').map(t => t.trim()).filter(Boolean);
+    const tagIds = [];
+    for (const name of tagNames) tagIds.push((await apiJson('POST', '/api/tags', { name })).id);
+
+    let skipped = 0;
+    if (file) {
+      // Only recordings that will have a category can be filed.
+      if (!catSel.value) { const before = ids.length; ids = ids.filter(id => items.find(r => r.id === id).category); skipped = before - ids.length; }
+      patch.status = 'filed';
+    }
+    if (ids.length === 0) return report(file ? 'None of the selected recordings has a category. Choose one above.' : 'Nothing selected.', true);
+    if (Object.keys(patch).length === 0 && tagIds.length === 0) return report('Choose something to apply first.', true);
+
+    statusEl.textContent = 'Working\u2026'; statusEl.className = 'status';
+    const out = await runBatch(ids, patch, tagIds);
+    const failed = out.results.filter(x => !x.ok);
+    let msg = file ? `Queued ${out.ok_count} for filing.` : `Applied to ${out.ok_count}.`;
+    if (skipped) msg += ` ${skipped} skipped (no category).`;
+    if (failed.length) msg += `\n${failed.length} failed: ` + failed.slice(0, 3).map(f => f.error).join('; ');
+    out.results.filter(x => x.ok).forEach(x => selected.delete(x.id));
+    await loadQueue();
+    report(msg, failed.length > 0);
+  } catch (e) { report('Error: ' + e.message, true); }
+}
+
+async function useSuggestedDates() {
+  try {
+    const ids = [...selected].filter(id => { const r = items.find(x => x.id === id); return r && !r.captured_at && r.suggested_captured_at; });
+    if (ids.length === 0) return report('None of the selected recordings has a suggested date to confirm.', true);
+    const out = await runBatch(ids, { use_suggested_date: true }, []);
+    await loadQueue();
+    report(`Confirmed the filename date on ${out.ok_count}` + (out.error_count ? `, ${out.error_count} failed.` : '.'), out.error_count > 0);
+  } catch (e) { report('Error: ' + e.message, true); }
+}
+
+(async () => {
+  try {
+    [categories, projects, sessions, tags] = await Promise.all([
+      apiJson('GET', '/api/categories'), apiJson('GET', '/api/projects'), apiJson('GET', '/api/sessions'), apiJson('GET', '/api/tags'),
+    ]);
+  } catch (e) { /* the list still works without the bar's choices */ }
+  loadQueue();
+})();
 </script>
 {% endblock %}
