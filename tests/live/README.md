@@ -23,7 +23,15 @@ Run one (from the dev machine; needs `ssh pmx2`):
 | `live_inbox_disk_budget.py` | the Inbox pull's disk admission (fake rclone) |
 | `live_inbox_and_filing.py` | recursive Inbox pull, sidecars, held project files, background filing through the real worker |
 | `live_batch_review.py` | the batch endpoint, incl. filing through the worker |
+| `live_map.py` | map config/pins with the Library's filters, unlocated counts, the track data the route map draws, choosing a location on the map |
 | `live_previews.py` | waveform + listening-copy generation through the worker, failures, NAS-down skipping, the real 15-minute file |
 
 They assume the real resource `66482729-...` exists (the first test recording); update the constant if it is removed.
 Running them while a real Inbox pull or filing is in progress could interleave with it; do it when the queue is idle.
+
+## JavaScript tests (run on the dev machine, no dependencies)
+
+    node tests/js/test_map.js
+
+Tests the map component (`app/static/map.js`) with a fake canvas: projection, tile selection, zoom/pan, interpolation
+along a route, nearest point on a route, clustering, pointer handling.

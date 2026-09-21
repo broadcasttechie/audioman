@@ -18,6 +18,55 @@ bp = Blueprint("api", __name__)
 
 # --- Resources (the review queue is just a filtered view over this) ---
 
+def _filtered_resources(args, default_statuses=None):
+    """The query behind the Library and the map: every filter the list endpoint accepts, in one place
+    (status, role, category, session, project, tag, q). `default_statuses` applies when `status` is absent."""
+    query = Resource.query
+
+    statuses = [s for s in (args.get("status") or "").split(",") if s] if args.get("status") is not None else (default_statuses or [])
+    if statuses:
+        query = query.filter(Resource.status.in_(statuses))
+
+    roles = args.get("role")
+    if roles == "all":
+        pass
+    elif roles:
+        query = query.filter(Resource.role.in_([x for x in roles.split(",") if x]))
+    else:
+        # Sidecars and project files ride along with their audio; they are not listed as recordings.
+        query = query.filter(Resource.role.notin_(("sidecar", "project-file")))
+    category = args.get("category")
+    if category:
+        query = query.filter(Resource.category == category)
+
+    session_id = args.get("session_id")
+    if session_id == "none":
+        query = query.filter(Resource.session_id.is_(None))
+    elif session_id:
+        query = query.filter(Resource.session_id == session_id)
+    project_id = args.get("project_id")
+    if project_id == "none":
+        query = query.filter(Resource.project_id.is_(None))
+    elif project_id:
+        query = query.filter(Resource.project_id == project_id)
+
+    for tag_name in args.getlist("tag"):
+        query = query.filter(Resource.tags.any(Tag.name == tag_name))
+
+    q = (args.get("q") or "").strip()
+    if q:
+        # Search what people actually remember: the name, their notes, the session or project it belongs to, a tag.
+        query = query.filter(db.or_(
+            Resource.filename.icontains(q, autoescape=True),
+            Resource.notes.icontains(q, autoescape=True),
+            Resource.session.has(RecordingSession.name.icontains(q, autoescape=True)),
+            Resource.project.has(Project.name.icontains(q, autoescape=True)),
+            Resource.tags.any(Tag.name.icontains(q, autoescape=True)),
+        ))
+
+    return query
+
+
 @bp.get("/resources")
 def list_resources():
     """
@@ -37,48 +86,7 @@ def list_resources():
     limit = min(int(request.args.get("limit", 50)), 200)
     offset = int(request.args.get("offset", 0))
 
-    query = Resource.query
-
-    statuses = [s for s in (request.args.get("status") or "").split(",") if s]
-    if statuses:
-        query = query.filter(Resource.status.in_(statuses))
-
-    roles = request.args.get("role")
-    if roles == "all":
-        pass
-    elif roles:
-        query = query.filter(Resource.role.in_([x for x in roles.split(",") if x]))
-    else:
-        # Sidecars and project files ride along with their audio; they are not listed as recordings.
-        query = query.filter(Resource.role.notin_(("sidecar", "project-file")))
-    category = request.args.get("category")
-    if category:
-        query = query.filter(Resource.category == category)
-
-    session_id = request.args.get("session_id")
-    if session_id == "none":
-        query = query.filter(Resource.session_id.is_(None))
-    elif session_id:
-        query = query.filter(Resource.session_id == session_id)
-    project_id = request.args.get("project_id")
-    if project_id == "none":
-        query = query.filter(Resource.project_id.is_(None))
-    elif project_id:
-        query = query.filter(Resource.project_id == project_id)
-
-    for tag_name in request.args.getlist("tag"):
-        query = query.filter(Resource.tags.any(Tag.name == tag_name))
-
-    q = (request.args.get("q") or "").strip()
-    if q:
-        # Search what people actually remember: the name, their notes, the session or project it belongs to, a tag.
-        query = query.filter(db.or_(
-            Resource.filename.icontains(q, autoescape=True),
-            Resource.notes.icontains(q, autoescape=True),
-            Resource.session.has(RecordingSession.name.icontains(q, autoescape=True)),
-            Resource.project.has(Project.name.icontains(q, autoescape=True)),
-            Resource.tags.any(Tag.name.icontains(q, autoescape=True)),
-        ))
+    query = _filtered_resources(request.args)
 
     total = query.count()
 
@@ -646,6 +654,36 @@ def reclaimable_ack():
     db.session.merge(row)
     db.session.commit()
     return jsonify({"acknowledged": yes})
+
+
+# --- Maps ---
+
+@bp.get("/map/config")
+def map_config():
+    """Where the browser fetches map tiles from (the map itself is drawn client-side, app/static/map.js)."""
+    return jsonify({"tile_url": Config.MAP_TILE_URL, "attribution": Config.MAP_ATTRIBUTION, "max_zoom": Config.MAP_MAX_ZOOM})
+
+
+@bp.get("/map/pins")
+def map_pins():
+    """
+    Every recording that has a location, for the all-recordings map. Takes the same filters as the Library
+    (`category`, `project_id`, `session_id`, `tag`, `q`, `status`); with no `status` it covers filed, being-filed
+    and still-to-review recordings. Also reports how many matching recordings have NO location, so the map can
+    say what it is leaving out (only recordings with an exact time are looked up automatically).
+    """
+    base = _filtered_resources(request.args, default_statuses=["filed", "filing", "pending-review"])
+    located = base.join(Location, Location.resource_id == Resource.id).filter(Location.lat.isnot(None), Location.lon.isnot(None))
+    total = located.count()
+    rows = (located.with_entities(Resource.id, Resource.filename, Resource.category, Resource.captured_at, Resource.duration_seconds,
+                                  Location.lat, Location.lon, Location.source)
+            .order_by(Resource.captured_at.desc().nullslast(), Resource.id).limit(Config.MAP_MAX_PINS).all())
+    unlocated = base.filter(~Resource.location.has()).count()
+    return jsonify({
+        "pins": [{"id": r.id, "filename": r.filename, "category": r.category, "captured_at": to_utc_iso(r.captured_at),
+                  "duration_seconds": r.duration_seconds, "lat": r.lat, "lon": r.lon, "source": r.source} for r in rows],
+        "total": total, "truncated": total > len(rows), "unlocated": unlocated,
+    })
 
 
 @bp.get("/nas/status")

@@ -50,6 +50,12 @@
   .wf-bar { display: flex; gap: 0.4rem; align-items: center; margin-top: 0.4rem; font-size: 0.8rem; flex-wrap: wrap; }
   .wf-bar button { padding: 0.15rem 0.7rem; }
   .wf-time { margin-left: auto; font-variant-numeric: tabular-nums; opacity: 0.8; }
+
+  .map-box { position: relative; height: 260px; border: 1px solid #8884; border-radius: 8px; overflow: hidden; margin-bottom: 0.4rem; }
+  .map-box canvas { width: 100%; height: 100%; display: block; }
+  .loc-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.4rem; }
+  .loc-actions button { font-size: 0.85rem; padding: 0.25rem 0.7rem; }
+  .loc-actions label { font-size: 0.85rem; }
   @media (min-width: 720px) { .player-bar { bottom: 0; } }
 </style>
 {% endblock %}
@@ -58,6 +64,7 @@
 <div id="detail" class="status">Loading...</div>
 {% endblock %}
 {% block scripts %}
+<script src="/static/map.js"></script>
 <script>
 const resourceId = {{ resource_id | tojson }};
 let allCategories = [];  // [{slug, label}] from /api/categories: configurable, not a fixed list
@@ -452,21 +459,74 @@ function buildCapturedAtSection(resource) {
   return section;
 }
 
+// ---------------- location + map ----------------
+// The map is drawn by app/static/map.js. When the recording has a GPS track the route is drawn on it, a marker follows
+// the audio along the route, and clicking the route jumps the audio to that moment.
+let mapCfg = null;
+let mapListeners = [];
+let locationNote = '';        // shown once, after the re-render that follows a lookup
+
+function detachMap() {
+  mapListeners.forEach(([t, ev, fn]) => t.removeEventListener(ev, fn));
+  mapListeners = [];
+}
+
+async function getMapConfig() {
+  if (!mapCfg) mapCfg = await apiJson('GET', '/api/map/config');
+  return mapCfg;
+}
+
 function buildLocationSection(resource) {
+  detachMap();
   const section = el('section');
-  section.append(el('h2', {}, ['Location']));
-  if (resource.location) {
-    section.append(el('p', { class: 'hint' }, [
-      `${resource.location.lat.toFixed(5)}, ${resource.location.lon.toFixed(5)} (${resource.location.source})`,
-    ]));
-  } else {
-    section.append(el('p', { class: 'hint' }, ['No location yet.']));
-  }
-  section.append(el('p', { class: 'hint' }, ['Map view coming later -- manual override below works now.']));
+  const loc = resource.location;
+  section.append(el('h2', {}, ['Location ', loc ? el('span', { class: 'badge unset' }, [loc.source]) : '']));
+
+  const picker = { active: false };
+  const status = el('p', { class: 'hint' }, ['']);
+  const holder = el('div');
+  const follow = el('input', { type: 'checkbox', checked: 'checked' });
+  const followLabel = el('label', {}, [follow, ' follow']);
+  followLabel.hidden = true;
+  const ctl = { setPick: null };
+
+  const describe = () => (loc ? `${loc.lat.toFixed(5)}, ${loc.lon.toFixed(5)}` : 'No location yet.') +
+    (resource.has_track ? ' · click the route to jump the audio to that moment.' : '');
+  status.textContent = (locationNote ? locationNote + ' ' : '') + describe();
+  locationNote = '';
+
+  const mountMap = () => { holder.replaceChildren(); mountTrackMap(holder, resource, picker, status, follow, followLabel, ctl); };
+  if (loc || resource.has_track) mountMap();
+
+  const canLookUp = !!resource.captured_at && (resource.captured_at_precision || 'exact') === 'exact';
+  const refresh = el('button', { type: 'button', title: canLookUp ? 'Ask Dawarich where you were at that time' : 'Needs an exact date and time' }, ['Look up from Dawarich']);
+  refresh.disabled = !canLookUp;
+  refresh.addEventListener('click', async () => {
+    refresh.disabled = true; status.textContent = 'Looking up…';
+    try {
+      const r = await apiJson('POST', `/api/resources/${resource.id}/location/refresh`, {});
+      locationNote = r.found ? `Found ${r.track_points} GPS point${r.track_points === 1 ? '' : 's'} around that time.`
+                             : (r.track_points ? 'Found a track but no position for the start.' : 'Dawarich has no points for that time.');
+      if (r.kept_manual_location) locationNote += ' Your manual location was kept.';
+      renderDetail(await (await fetch(`/api/resources/${resource.id}`)).json());
+    } catch (e) { refresh.disabled = false; status.textContent = 'Error: ' + e.message; }
+  });
+  const pick = el('button', { type: 'button' }, ['Choose on map']);
+  pick.addEventListener('click', () => {
+    if (!holder.firstChild) mountMap();
+    picker.active = !picker.active;
+    pick.textContent = picker.active ? 'Cancel choosing' : 'Choose on map';
+    if (ctl.setPick) ctl.setPick(picker.active);
+    if (picker.active) status.textContent = 'Click the map where this was recorded.';
+    else status.textContent = describe();
+  });
+  const actions = el('div', { class: 'loc-actions' }, [refresh, pick, followLabel]);
+  if (loc) actions.append(el('a', { href: '/map?focus=' + encodeURIComponent(resource.id) }, ['Show on the big map →']));
+  section.append(holder, status, actions);
 
   const row = el('div', { class: 'row' });
-  const latInput = el('input', { type: 'text', placeholder: 'lat', value: resource.location ? resource.location.lat : '' });
-  const lonInput = el('input', { type: 'text', placeholder: 'lon', value: resource.location ? resource.location.lon : '' });
+  const latInput = el('input', { type: 'text', placeholder: 'lat', value: loc ? loc.lat : '' });
+  const lonInput = el('input', { type: 'text', placeholder: 'lon', value: loc ? loc.lon : '' });
   const saveBtn = el('button', {
     type: 'button',
     onclick: async () => {
@@ -481,6 +541,76 @@ function buildLocationSection(resource) {
   row.append(latInput, lonInput, saveBtn);
   section.append(row);
   return section;
+}
+
+async function mountTrackMap(holder, resource, picker, status, follow, followLabel, ctl) {
+  const canvas = el('canvas');
+  holder.append(el('div', { class: 'map-box' }, [canvas]));
+  try {
+    const cfg = await getMapConfig();
+    const map = new AudioMap.TileMap(canvas, { tileUrl: cfg.tile_url, attribution: cfg.attribution, maxZoom: cfg.max_zoom, wheelZoom: 'ctrl' });
+    const audio = () => document.getElementById('player');
+    let layer = null;
+
+    if (resource.has_track) {
+      const track = await apiJson('GET', `/api/resources/${resource.id}/track`);
+      const points = track.map(p => ({ lat: p.lat, lon: p.lon, offset_seconds: p.offset_seconds }));
+      if (points.length) {
+        layer = new AudioMap.TrackLayer(points, { duration: resource.duration_seconds, getTime: () => (audio() ? audio().currentTime : 0) });
+        map.overlays.push((ctx, m) => layer.draw(ctx, m));
+        followLabel.hidden = false;
+      }
+    }
+    if (!layer && resource.location) {
+      const pin = new AudioMap.PinLayer(resource.location.lat, resource.location.lon);
+      map.overlays.push((ctx, m) => pin.draw(ctx, m));
+    }
+    if (layer) map.fitBounds(layer.points, 36, 17);
+    else if (resource.location) map.setView(resource.location.lat, resource.location.lon, 16);
+    else map.setView(52.5, -1.9, 6);
+
+    ctl.setPick = (on) => { map.cursor = on ? 'crosshair' : 'grab'; canvas.style.cursor = map.cursor; };
+    if (picker.active) ctl.setPick(true);
+
+    map.onClick = async (x, y, ll) => {
+      if (picker.active) {
+        picker.active = false;
+        try { renderDetail(await patchResource({ location: { lat: ll.lat, lon: ll.lon, source: 'manual' } })); }
+        catch (e) { alert('Error: ' + e.message); }
+        return;
+      }
+      if (!layer) return;
+      const hit = layer.hit(map, x, y, 26);
+      const a = audio();
+      if (hit && a) { a.currentTime = hit.offset; status.textContent = `Jumped to ${AudioMap.fmtTime(hit.offset)}.`; map.schedule(); }
+    };
+    map.onHover = (x, y) => { if (layer && !picker.active) layer.setHover(map, x, y); };
+    canvas.addEventListener('pointerleave', () => { if (layer) layer.setHover(map, null, null); });
+
+    // Keep the marker in step with the audio (and follow it when it leaves the view).
+    let raf = null;
+    const tick = () => {
+      const a = audio();
+      if (layer && follow.checked && a && !a.paused) {
+        const at = AudioMap.interpolatePosition(layer.points, a.currentTime);
+        const s = map.toScreen(at.lat, at.lon), { w, h } = map.size();
+        if (s.x < w * 0.12 || s.x > w * 0.88 || s.y < h * 0.12 || s.y > h * 0.88) map.panBy(s.x - w / 2, s.y - h / 2);
+      }
+      map.schedule();
+      raf = (a && !a.paused && document.body.contains(canvas)) ? requestAnimationFrame(tick) : null;
+    };
+    const kick = () => { if (!raf) raf = requestAnimationFrame(tick); };
+    const redraw = () => map.schedule();
+    const a = audio();
+    if (a) {
+      for (const ev of ['play', 'playing']) { a.addEventListener(ev, kick); mapListeners.push([a, ev, kick]); }
+      for (const ev of ['seeked', 'timeupdate', 'pause', 'loadedmetadata']) { a.addEventListener(ev, redraw); mapListeners.push([a, ev, redraw]); }
+      if (!a.paused) kick();
+    }
+    map.schedule();
+  } catch (e) {
+    holder.replaceChildren(el('p', { class: 'hint' }, ['The map could not be loaded: ' + e.message]));
+  }
 }
 
 function buildPhotosSection() {

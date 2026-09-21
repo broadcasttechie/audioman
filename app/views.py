@@ -10,6 +10,11 @@ def index():
     return render_template("home.html", active_tab="home")
 
 
+@ui_bp.get("/map")
+def map_page():
+    return render_template("map.html", active_tab="map")
+
+
 @ui_bp.get("/manage")
 def manage():
     return render_template("manage.html", active_tab="manage")

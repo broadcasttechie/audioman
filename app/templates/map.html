@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Map{% endblock %}
+{% block head %}
+<style>
+  .container { max-width: none; }
+  .filters { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.5rem; }
+  .filters select, .filters input[type=search] { flex: 1 1 9rem; min-width: 0; width: auto; }
+  .filters label { font-size: 0.85rem; white-space: nowrap; }
+  #summary { font-size: 0.85rem; opacity: 0.8; margin-bottom: 0.4rem; min-height: 1.2rem; }
+  .map-wrap { position: relative; height: calc(100vh - var(--nav-size) - 11rem - env(safe-area-inset-bottom)); min-height: 320px;
+              border: 1px solid #8884; border-radius: 8px; overflow: hidden; }
+  @media (min-width: 720px) { .map-wrap { height: calc(100vh - var(--nav-size) - 9rem); } }
+  .map-wrap canvas { width: 100%; height: 100%; display: block; }
+  .popup { position: absolute; z-index: 3; max-width: min(20rem, 85%); background: Canvas; color: CanvasText; border: 1px solid #8886;
+           border-radius: 8px; padding: 0.6rem 0.8rem; box-shadow: 0 3px 14px #0004; font-size: 0.85rem; }
+  .popup .close { position: absolute; top: 2px; right: 6px; border: none; background: none; font-size: 1.2rem; cursor: pointer; color: inherit; }
+  .popup a.title { font-weight: 600; word-break: break-word; display: block; margin-right: 1.2rem; }
+  .popup .meta { opacity: 0.7; margin-top: 0.15rem; }
+  .popup ul { margin: 0.3rem 0 0; padding-left: 1rem; max-height: 10rem; overflow: auto; }
+  .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 1rem;
+           pointer-events: none; z-index: 1; color: #444; background: rgba(255,255,255,.55); }
+</style>
+{% endblock %}
+{% block content %}
+<h1>Map</h1>
+<div class="filters">
+  <select id="f-category" aria-label="Category"></select>
+  <input type="search" id="f-q" placeholder="Search notes, names, tags…">
+  <label><input type="checkbox" id="f-review" checked> include not yet filed</label>
+</div>
+<div id="summary"></div>
+<div class="map-wrap" id="wrap"><canvas id="map"></canvas></div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/app.js"></script>
+<script src="/static/map.js"></script>
+<script>
+const wrap = document.getElementById('wrap');
+const canvas = document.getElementById('map');
+let map = null, pins = [], clusters = [], popup = null, categories = [], focusId = new URLSearchParams(location.search).get('focus');
+const PALETTE = ['#e0533d', '#3a7bd5', '#2a9d4b', '#c98a00', '#8a4fc7', '#d6338a', '#0f9aa8', '#7a7a7a'];
+const colourOf = (slug) => { const i = categories.findIndex(c => c.slug === slug); return PALETTE[(i < 0 ? 7 : i) % PALETTE.length]; };
+const labelOf = (slug) => (categories.find(c => c.slug === slug) || { label: slug || 'Uncategorised' }).label;
+
+function closePopup() { if (popup) { popup.remove(); popup = null; } }
+
+function showPopup(x, y, members) {
+  closePopup();
+  const body = members.length === 1
+    ? [el('a', { class: 'title', href: '/review/' + members[0].pin.id }, [members[0].pin.filename]), el('div', { class: 'meta' }, [describe(members[0].pin)])]
+    : [el('div', { class: 'meta' }, [`${members.length} recordings here`]),
+       el('ul', {}, members.slice(0, 40).map(m => el('li', {}, [el('a', { href: '/review/' + m.pin.id }, [m.pin.filename]), el('div', { class: 'meta' }, [describe(m.pin)])])))];
+  const close = el('button', { class: 'close', type: 'button', 'aria-label': 'Close' }, ['×']);
+  close.addEventListener('click', closePopup);
+  popup = el('div', { class: 'popup' }, [close, ...body]);
+  wrap.append(popup);
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  popup.style.left = Math.max(6, Math.min(x + 12, w - popup.offsetWidth - 6)) + 'px';
+  popup.style.top = Math.max(6, Math.min(y - popup.offsetHeight - 12, h - popup.offsetHeight - 6)) + 'px';
+}
+
+function describe(p) {
+  return [labelOf(p.category), p.captured_at ? formatDate(p.captured_at) : 'no date', formatDuration(p.duration_seconds)].filter(Boolean).join(' · ');
+}
+
+// Screen positions -> clusters, every draw (cheap: a few thousand points at most).
+function computeClusters() {
+  const screen = pins.map(p => ({ ...map.toScreen(p.lat, p.lon), pin: p }));
+  const w = map.size().w, h = map.size().h;
+  return AudioMap.clusterPins(screen.filter(s => s.x > -30 && s.x < w + 30 && s.y > -30 && s.y < h + 30), 46);
+}
+
+function overlay(ctx) {
+  clusters = computeClusters();
+  for (const c of clusters) {
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5;
+    if (c.count === 1) {
+      ctx.fillStyle = colourOf(c.members[0].pin.category);
+      ctx.beginPath(); ctx.arc(c.x, c.y, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    } else {
+      const r = 13 + Math.min(10, Math.log2(c.count) * 2.2);
+      ctx.fillStyle = 'rgba(58,123,213,.88)';
+      ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 12px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(c.count > 999 ? '999+' : String(c.count), c.x, c.y);
+    }
+  }
+}
+
+function onClick(x, y) {
+  const hit = clusters.map(c => ({ c, d: Math.hypot(c.x - x, c.y - y) })).filter(o => o.d <= (o.c.count === 1 ? 16 : 26)).sort((a, b) => a.d - b.d)[0];
+  if (!hit) return closePopup();
+  const c = hit.c;
+  if (c.count === 1) return showPopup(c.x, c.y, c.members);
+  const ll = c.members.map(m => ({ lat: m.pin.lat, lon: m.pin.lon }));
+  const spread = Math.max(...ll.map(p => Math.abs(p.lat - ll[0].lat) + Math.abs(p.lon - ll[0].lon)));
+  if (spread < 1e-5 || map.zoom >= map.maxZoom - 0.5) return showPopup(c.x, c.y, c.members);   // the same place: list them
+  closePopup();
+  map.fitBounds(ll, 70, map.maxZoom - 1);
+}
+
+async function load() {
+  const p = new URLSearchParams();
+  const cat = document.getElementById('f-category').value, q = document.getElementById('f-q').value.trim();
+  if (cat) p.set('category', cat);
+  if (q) p.set('q', q);
+  if (!document.getElementById('f-review').checked) p.set('status', 'filed');
+  const d = await apiJson('GET', '/api/map/pins?' + p.toString());
+  pins = d.pins;
+  closePopup();
+  const bits = [`${d.total} recording${d.total === 1 ? '' : 's'} on the map`];
+  if (d.unlocated) bits.push(`${d.unlocated} without a location (locations are looked up only for recordings with an exact time)`);
+  if (d.truncated) bits.push(`showing the newest ${pins.length}`);
+  document.getElementById('summary').textContent = bits.join(' · ');
+  for (const e of wrap.querySelectorAll('.empty')) e.remove();
+  if (!pins.length) wrap.append(el('div', { class: 'empty' }, ['No recordings with a location match these filters.']));
+  else if (!load.fitted) { map.fitBounds(pins.map(x => ({ lat: x.lat, lon: x.lon })), 50, 15); load.fitted = true; }
+  const target = focusId && pins.find(x => x.id === focusId);
+  if (target && !load.focused) {
+    load.focused = true;
+    map.setView(target.lat, target.lon, 16);
+    map.draw();
+    const s = map.toScreen(target.lat, target.lon);
+    showPopup(s.x, s.y, [{ pin: target }]);
+  }
+  map.schedule();
+}
+
+(async () => {
+  try {
+    const [cfg, cats] = await Promise.all([apiJson('GET', '/api/map/config'), apiJson('GET', '/api/categories')]);
+    categories = cats;
+    const sel = document.getElementById('f-category');
+    sel.append(el('option', { value: '' }, ['All categories']));
+    cats.forEach(c => sel.append(el('option', { value: c.slug }, [c.label])));
+    map = new AudioMap.TileMap(canvas, { tileUrl: cfg.tile_url, attribution: cfg.attribution, maxZoom: cfg.max_zoom, wheelZoom: 'always' });
+    map.overlays.push(overlay);
+    map.onClick = onClick;
+    sel.addEventListener('change', load);
+    document.getElementById('f-review').addEventListener('change', load);
+    let t = null;
+    document.getElementById('f-q').addEventListener('input', () => { clearTimeout(t); t = setTimeout(load, 300); });
+    await load();
+  } catch (e) { document.getElementById('summary').textContent = 'Error: ' + e.message; }
+})();
+</script>
+{% endblock %}

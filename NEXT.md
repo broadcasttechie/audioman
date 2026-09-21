@@ -256,6 +256,34 @@ No migration was needed (the user confirmed only test data exists), so the chang
 - **Not clicked through in a browser:** Home, Manage, Reclaim, review-queue batch bar, detail waveform. JS syntax-checked;
   all pages serve; every API behind them is covered by the live checks.
 
+## Built 2026-09-21: maps (per-recording route + all-recordings map)
+- **A map component of our own** (`app/static/map.js`, no library, no CDN): OpenStreetMap raster tiles on a canvas
+  (tile URL and attribution configurable: `MAP_TILE_URL`, `MAP_ATTRIBUTION`; the browser fetches the tiles, which is the
+  only outside request; OSM answered 200 for a test tile). Pan, pinch / ctrl+wheel / +- zoom (fractional, keeps the
+  point under the finger fixed), double-click zoom, crisp tiles on high-density screens, blurry-parent fallback while
+  tiles load, a bounded shared tile cache, attribution shown.
+- **Detail screen, Location section:** the recording's GPS **route** on the map (start green, end dark, fixes as dots), a
+  **blue marker that follows the audio** along the route (interpolated between fixes by time; "follow" keeps it in
+  view), and **click the route to jump the audio to that moment** (hover shows the time under the pointer; a click
+  seeks; it is not clamped past the audio's length). "Look up from Dawarich" button (the refresh the user asked for
+  earlier; needs an exact date; keeps a manual location; reports what it found), "Choose on map" to set a manual
+  location by clicking (works for recordings with no GPS data), and "Show on the big map".
+- **Map tab** (`/map`, new sixth tab): every recording that has a location as clustered pins, coloured by category, click a
+  pin for a card (name, category, date, duration, link), click a cluster to zoom into it (or list them if they are in
+  one place); filters for category, text search (notes/sessions/projects/tags too) and "include not yet filed";
+  says how many matching recordings have no location. `GET /api/map/pins` shares the Library's filters via one helper
+  (`_filtered_resources`); `GET /api/map/config`.
+- **Verified without a browser:** 16 Node tests of the map maths and behaviour (`tests/js/test_map.js`: projection agrees
+  with the standard tile formulas, tile selection, zoom/pan invariants, interpolation, nearest-point-on-route, clustering,
+  pointer handling with a fake canvas), plus a run of the same code against the **real 13-point route** (`tests/live/`
+  README): the whole route fits the map, clicking each fix jumps to that fix's time, halfway between two fixes gives halfway
+  between their times, and the marker moves smoothly with no jumps. The API is covered by `live_map.py` (19 checks).
+  **Not verified:** how it looks and feels in a real browser (touch gestures, tile loading, the popup placement).
+- **The real test recording is a train journey:** about 8 minutes at Stoke station, then about 7 km in 4.5 minutes.
+- **Not built:** place names (still needs the geocoder decision); clicking the waveform region ranges on the map; a
+  heat/density mode. A recording whose date is approximate has no automatic location, so it appears only under
+  "without a location" until one is chosen on the map.
+
 ## Fixed 2026-09-21 (found by a regression run and by looking at Home)
 - **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
 - **Stranded queue rows:** a worker restarted mid-job left its row `running`, which blocked new runs of that job for
@@ -296,15 +324,14 @@ checks (`tests/live/`).
 | 4 | [app] API v1 + per-device tokens | not started |
 | 5 | Inbox hardening, batch review, background filing | **done**; [app] upload API v2 not started |
 | 6 | Waveform + listening copy + reclaimable space | **done** ([app] device export API not started) |
-| 8 | Categories as data, Manage, Home | **done**; global map and place names **not started** (need decisions below) |
+| 8 | Categories as data, Manage, Home, maps | **done** (including the per-recording route map and the all-recordings map); place names not started (needs the geocoder decision) |
 | 9 | Placement + per-file copies + Drive remote | not started (Drive-copy design unresolved) |
 | 10 | Segments UI, then transcription worker | not started |
 
 **Not in the MVP, in the order I would do them:**
 1. **Split-file joining and multitrack/outing grouping** (Insta360 parts are exactly 1800 s with a ~2 s gap; `filename_info`
    already carries what the matcher needs). Suggest-only; a join is a non-destructive ffmpeg concat kept in staging budget.
-2. **Global map + place names.** Needs two decisions: OK to vendor Leaflet (BSD-2, a download), and the geocoder
-   (public Nominatim with a cache vs self-hosted).
+2. **Place names.** Needs one decision: the geocoder (public Nominatim with a cache, sending coordinates to OSM, vs self-hosted).
 3. **Package 4 -> 5 (upload v2) -> 6 (device export)** = the backend the Android app needs. The app itself stays plan-only.
 4. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
 5. **Placement/Drive copies** (needs the Drive remote decision: `drive.file` OAuth vs full OAuth vs skip).

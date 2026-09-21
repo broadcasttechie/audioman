@@ -88,6 +88,13 @@ class Config:
     PREVIEW_TIMEOUT_SECONDS = 1800
     PREVIEW_RUN_SECONDS = 600         # one sweeper run stops starting new files after this long
 
+    # --- Maps (app/static/map.js): OpenStreetMap raster tiles fetched by the browser. Swap the URL for a
+    # self-hosted or another provider's tile server if you want; {z}/{x}/{y} are filled in. Keep the attribution. ---
+    MAP_TILE_URL = os.environ.get("MAP_TILE_URL", "https://tile.openstreetmap.org/{z}/{x}/{y}.png")
+    MAP_ATTRIBUTION = os.environ.get("MAP_ATTRIBUTION", "\u00a9 OpenStreetMap contributors")
+    MAP_MAX_ZOOM = int(os.environ.get("MAP_MAX_ZOOM", 19))
+    MAP_MAX_PINS = 5000
+
     # --- Clip export (legacy path, superseded by Export workflow below —
     # kept only so an old export from before this change still resolves) ---
     CLIPS_EXPORT_DIR = os.environ.get("CLIPS_EXPORT_DIR", "/var/lib/audio-manager/clips")

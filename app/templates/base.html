@@ -57,7 +57,7 @@
   @media (min-width: 720px) {
     body { padding-bottom: 0; padding-top: var(--nav-size); }
     nav.tabbar {
-      top: 0; bottom: auto; justify-content: center; gap: 2.5rem;
+      top: 0; bottom: auto; justify-content: center; gap: 2rem;
       border-top: none; border-bottom: 1px solid #8884;
     }
     nav.tabbar a { flex: none; flex-direction: row; gap: 0.4rem; font-size: 0.9rem; }
@@ -70,6 +70,7 @@
   <a href="/" class="{{ 'active' if active_tab == 'home' else '' }}"><span class="icon">🏠</span>Home</a>
   <a href="/review" class="{{ 'active' if active_tab == 'review' else '' }}"><span class="icon">🎧</span>Review</a>
   <a href="/library" class="{{ 'active' if active_tab == 'library' else '' }}"><span class="icon">📚</span>Library</a>
+  <a href="/map" class="{{ 'active' if active_tab == 'map' else '' }}"><span class="icon">🗺️</span>Map</a>
   <a href="/manage" class="{{ 'active' if active_tab == 'manage' else '' }}"><span class="icon">🗂️</span>Manage</a>
   <a href="/settings" class="{{ 'active' if active_tab == 'settings' else '' }}"><span class="icon">⚙️</span>Settings</a>
 </nav>
