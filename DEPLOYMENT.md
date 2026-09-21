@@ -152,8 +152,8 @@ Not built; flagging so it doesn't get lost.
   **`replicate=0` was required**: LXC 132 has a storage-replication job
   (132-0 -> pmx1), and Proxmox refuses a non-replicatable volume without it.
   The mount is therefore not replicated and not in vzdump backups — the audio
-  is protected only by whatever backup is chosen for the NAS (open, see
-  NEXT.md).
+  is protected only by the user's own backup of the NAS share, managed
+  outside the app (decided 2026-09-21).
 - `/mnt/nas/audio/.audio-manager-nas` is a marker file that only exists on the
   NAS; the planned **mount guard** (not built) should require it before any
   filing/copy/verify.

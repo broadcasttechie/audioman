@@ -147,18 +147,17 @@ set Flask `MAX_CONTENT_LENGTH` and nginx `client_max_body_size`; update
 DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
 
 ## Storage gaps found 2026-09-21 (decide/do before the packages noted)
-- **No real backup of the library (before WP5 archive import and WP9).**
-  Drive is no longer the safety net (user is cutting Drive use, and the
-  Drive upload never worked). After filing, the NAS holds the only copy; the
-  ingested originals in `Inbox/_processed` are the only other copy until the
-  user deletes them. ds124 (192.168.1.2) also holds the Proxmox/PBS backups,
-  so it cannot back itself up. **Decide a backup target** (external USB disk
-  via Hyper Backup, a second box, or an off-site cloud backup — the user's
-  "no cloud" rule was stated for transcription; ask whether it covers backups).
-  The reclaimable-space view (WP6) must offer a file only when it is on the
-  NAS, checksum-verified **and** present in that backup.
-  Proxmox note: a bind-mounted `mp0` is not included in vzdump unless flagged,
-  so the LXC backups will not contain the audio.
+- **Backup: the user manages it externally to the app (decided 2026-09-21).**
+  The app builds no backup feature and does not verify one. Consequences:
+  the app cannot know whether a file is backed up, so the reclaimable-space
+  view (WP6) offers originals whose NAS copy is checksum-verified and shows a
+  plain warning that deleting the Drive original is safe only if the user's
+  own backup covers the NAS; consider a one-time "I have an external backup"
+  acknowledgement in settings before the view offers anything. The audio
+  mount is outside vzdump/replication (`backup=0,replicate=0`) and ds124 also
+  holds the PBS datastore, so the user's backup must target the NAS share
+  itself. Still worth doing before the archive import, but it is the user's
+  task, not a build item.
 - **NAS mount guard (before the mount goes live).** `/mnt/nas/audio` is now a
   plain directory on the 16 GB root disk. Once NFS is mounted, a dropped mount
   would let filing write to the local disk. Filing, copying and verify jobs
@@ -179,7 +178,8 @@ DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
   at `/mnt/nas/audio` (`replicate=0,backup=0` — LXC 132 is replicated to pmx1,
   which otherwise refuses the mount). Existing file migrated and verified.
   Details in DEPLOYMENT.md. Still to do: the **mount guard** (marker file
-  `/mnt/nas/audio/.audio-manager-nas` exists for it) and the **backup**.
+  `/mnt/nas/audio/.audio-manager-nas` exists for it). Backup is the user's,
+  outside the app.
 
 ## Questions the user can answer offline (each unblocks a package)
 1. Correct the wrong date on the existing resource (15th → 17th)? (WP1)
@@ -192,7 +192,7 @@ DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
 7. OK for filename/mtime dates as *suggestions* confirmed at intake — assumed
    yes from "filenames often have times"; say if not. (WP2)
 8. ~~Synology NFS export + mount~~ **done 2026-09-21**. Still open: UniFi
-   reservation and DNS, and the backup decision (before the archive import).
+   reservation and DNS. Backup: user-managed, outside the app.
 
 ## Android app — PLAN ONLY
 v1 is an **uploader for files on attached storage** (USB card reader /
