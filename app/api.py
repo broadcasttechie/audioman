@@ -42,6 +42,14 @@ def list_resources():
     if statuses:
         query = query.filter(Resource.status.in_(statuses))
 
+    roles = request.args.get("role")
+    if roles == "all":
+        pass
+    elif roles:
+        query = query.filter(Resource.role.in_([x for x in roles.split(",") if x]))
+    else:
+        # Sidecars and project files ride along with their audio; they are not listed as recordings.
+        query = query.filter(Resource.role.notin_(("sidecar", "project-file")))
     category = request.args.get("category")
     if category:
         query = query.filter(Resource.category == category)
@@ -103,7 +111,11 @@ def update_resource(resource_id):
     if "category" in data and data["category"] not in (None, *Config.CATEGORIES):
         return jsonify({"error": f"category must be one of {Config.CATEGORIES}"}), 400
 
-    filing_now = data.get("status") == "filed" and r.status != "filed"
+    if "status" in data and data["status"] not in ("pending-review", "filed", "archived"):
+        # 'filing' and 'failed' are set by the system (jobs/filing.py), never by a client.
+        return jsonify({"error": "status must be 'pending-review', 'filed' or 'archived'"}), 400
+    filing_now = data.get("status") == "filed" and r.status not in ("filed", "filing")
+    need_filing_job = False
     if filing_now:
         # Refuse before changing anything, so a dropped NAS mount can't leave a
         # half-applied edit behind.
@@ -194,25 +206,19 @@ def update_resource(resource_id):
     if filing_now:
         if not r.category:
             return jsonify({"error": "category is required before filing"}), 400
-        from jobs.nas import NasUnavailable
-        try:
-            _file_resource(r)
-        except NasUnavailable as e:
-            db.session.rollback()
-            return jsonify({"error": "The NAS is not available, so nothing was changed.",
-                            "detail": str(e)}), 503
-        except FileExistsError as e:
-            db.session.rollback()
-            return jsonify({"error": "A file with that name already exists in the destination folder; "
-                                     "nothing was changed.", "detail": str(e)}), 409
-        except OSError as e:
-            db.session.rollback()
-            return jsonify({"error": "Could not copy the file to the NAS; the original is untouched.",
-                            "detail": str(e)}), 500
+        if not r.staging_path or not os.path.exists(r.staging_path):
+            return jsonify({"error": "the file is no longer in staging, so it can't be filed"}), 409
+        # The copy runs in the background (jobs/filing.py): it can take longer than a web request.
+        r.status = "filing"
+        r.failure_stage = r.failure_detail = None
+        need_filing_job = True
     elif "status" in data:
         r.status = data["status"]
 
     db.session.commit()
+    if need_filing_job:
+        from jobs.queue import enqueue
+        enqueue("file-resources", triggered_by="filing")
     return jsonify(_resource_to_dict(r))
 
 
@@ -290,34 +296,6 @@ def _clear_derived_by_time(resource):
         db.session.delete(resource.location)
     resource.dawarich_checked_at = None
     resource.immich_checked_at = None
-
-
-def _file_resource(resource):
-    """
-    Moves a reviewed resource's file from staging into its NAS
-    canonical path (rendered from the current template), and updates
-    status/paths accordingly. Import is local to avoid a circular
-    import between app.api and jobs.path_template.
-    """
-    from jobs.nas import file_to_nas
-    from jobs.path_template import render_path
-
-    if not resource.staging_path or not os.path.exists(resource.staging_path):
-        raise FileNotFoundError(
-            f"staging file missing for resource {resource.id}: {resource.staging_path}"
-        )
-
-    relative_path = render_path(resource, project=resource.project, session=resource.session)
-    destination = os.path.join(Config.NAS_LIBRARY_ROOT, relative_path)
-
-    # Staging and the NAS are different filesystems, so this is copy ->
-    # verify -> delete, not a rename (see jobs/nas.py).
-    file_to_nas(resource.staging_path, destination, expected_sha256=resource.checksum)
-
-    resource.nas_path = destination
-    resource.staging_path = None
-    resource.status = "filed"
-    db.session.add(FileEvent(resource_id=resource.id, event_type="moved", detail=destination))
 
 
 def _resource_to_dict(r: Resource):

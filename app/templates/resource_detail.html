@@ -596,13 +596,25 @@ function setupPlayer() {
   document.body.append(bar);
 }
 
+// Filing copies the recording to the NAS in the background (large files take a while), so this
+// only queues it and then waits, polling, until it is filed or has failed.
 async function fileResource(resource) {
   const statusEl = document.getElementById('file-status');
   try {
-    await patchResource({ status: 'filed' });
-    statusEl.textContent = 'Filed. Back to the queue…';
-    statusEl.className = 'status ok';
-    setTimeout(() => { location.href = '/review'; }, 800);
+    let current = await patchResource({ status: 'filed' });
+    statusEl.className = 'status';
+    for (let i = 0; current.status === 'filing'; i++) {
+      statusEl.textContent = 'Copying to the NAS' + '.'.repeat(1 + (i % 3));
+      await new Promise(res => setTimeout(res, 2000));
+      current = await (await fetch(`/api/resources/${resourceId}`)).json();
+    }
+    if (current.status === 'filed') {
+      statusEl.textContent = 'Filed. Back to the queue…';
+      statusEl.className = 'status ok';
+      setTimeout(() => { location.href = '/review'; }, 800);
+    } else {
+      renderDetail(current);   // failed: the banner shows why, and the button can try again
+    }
   } catch (e) {
     statusEl.textContent = 'Error: ' + e.message;
     statusEl.className = 'status err';

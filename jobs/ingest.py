@@ -41,6 +41,7 @@ from app.timeutil import parse_exif_datetime
 from app.models import Resource, FileEvent
 from .filename_patterns import match_filename
 from .profiles import active_profiles
+from .filing import tidy_staging_dir, file_attached
 
 TRUSTED_TIMESTAMP_TAGS = [
     "DateTimeOriginal",
@@ -71,8 +72,11 @@ def ingest_staged_file(local_path, drive_inbox_path=None):
     existing = Resource.query.filter_by(checksum=checksum).first()
     if existing:
         os.makedirs(QUARANTINE_DIR, exist_ok=True)
-        dest = os.path.join(QUARANTINE_DIR, filename)
+        # The checksum prefix keeps two different duplicates that share a filename (STE-000.wav from
+        # two folders) from overwriting each other in quarantine.
+        dest = os.path.join(QUARANTINE_DIR, f"{checksum[:12]}_{filename}")
         shutil.move(local_path, dest)
+        tidy_staging_dir(local_path)
         db.session.add(FileEvent(
             resource_id=existing.id, event_type="failed",
             detail=f"duplicate of existing resource {existing.id}, quarantined at {dest}",
@@ -111,6 +115,42 @@ def ingest_staged_file(local_path, drive_inbox_path=None):
 
     db.session.add(FileEvent(resource_id=resource.id, event_type="ingested", detail=local_path))
     db.session.commit()
+    return resource
+
+
+def ingest_sidecar(local_path, drive_inbox_path, parent):
+    """
+    A generated companion file (`.reapeaks`, `.pkf`) of an audio Resource. Not audio: no probe, no
+    review. It waits as `attached` until its audio is filed, then is copied into the same NAS folder
+    (jobs/filing.py); if the audio is already filed that happens straight away. Returns the Resource,
+    or None if an identical file was already ingested (quarantined, like a duplicate recording).
+    """
+    filename = os.path.basename(local_path)
+    checksum = _sha256(local_path)
+    if Resource.query.filter_by(checksum=checksum).first():
+        os.makedirs(QUARANTINE_DIR, exist_ok=True)
+        shutil.move(local_path, os.path.join(QUARANTINE_DIR, f"{checksum[:12]}_{filename}"))
+        tidy_staging_dir(local_path)
+        db.session.add(FileEvent(resource_id=parent.id, event_type="failed",
+                                 detail=f"sidecar {filename} duplicates an existing file, quarantined"))
+        db.session.commit()
+        return None
+
+    resource = Resource(
+        checksum=checksum, filename=filename, format=os.path.splitext(filename)[1].lstrip(".").lower() or None,
+        role="sidecar", derived_from_id=parent.id, status="attached",
+        project_id=parent.project_id, session_id=parent.session_id, category=parent.category,
+        captured_at_precision="unknown", captured_at_source="manual",
+        drive_inbox_path=drive_inbox_path, staging_path=local_path,
+        dawarich_checked_at=datetime.utcnow(), immich_checked_at=datetime.utcnow(),  # never enriched
+    )
+    db.session.add(resource)
+    db.session.flush()
+    db.session.add(FileEvent(resource_id=resource.id, event_type="ingested",
+                             detail=f"sidecar of {parent.filename}: {local_path}"))
+    db.session.commit()
+    if parent.status == "filed":
+        file_attached(parent)
     return resource
 
 

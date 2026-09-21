@@ -142,12 +142,8 @@ def retry_failed():
     for resource in Resource.query.filter_by(status="failed").all():
         try:
             if resource.failure_stage == "move":
-                expected = render_path(resource, project=resource.project, session=resource.session)
-                expected_full = os.path.join(Config.NAS_LIBRARY_ROOT, expected)
-                os.makedirs(os.path.dirname(expected_full), exist_ok=True)
-                os.rename(resource.nas_path, expected_full)
-                resource.nas_path = expected_full
-                resource.status = "filed"
+                # Filing failed (jobs/filing.py): the file is still in staging, so just queue it again.
+                resource.status = "filing"
 
             else:
                 # checksum / metadata-extraction failures mean the raw
@@ -166,6 +162,9 @@ def retry_failed():
             still_failing.append(resource.id)
 
     db.session.commit()
+    if any(db.session.get(Resource, rid).status == "filing" for rid in retried):
+        from .queue import enqueue
+        enqueue("file-resources", triggered_by="retry-failed")
     _record_run(
         "retry-failed", "success",
         f"retried: {retried}, still_failing: {still_failing}",

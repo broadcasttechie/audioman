@@ -11,6 +11,7 @@ from .rclone_jobs import drive_inbox_pull, nas_to_drive_library, library_verify
 from .maintenance import refile_all, verify_integrity, find_orphans, retry_failed
 from .enrich import enrich_locations, enrich_photos
 from .export import process_exports
+from .filing import file_resources
 
 JOB_REGISTRY.update({
     "drive-inbox-pull": drive_inbox_pull,
@@ -23,4 +24,5 @@ JOB_REGISTRY.update({
     "enrich-locations": enrich_locations,
     "enrich-photos": enrich_photos,
     "process-exports": process_exports,
+    "file-resources": file_resources,
 })

@@ -135,6 +135,12 @@ e.g. a `GET /api/needs-attention` that rolls these up, surfaced as a badge
 somewhere in the UI nav — rather than each one being its own silent trail.
 Not built; flagging so it doesn't get lost.
 
+## Filing runs in the background
+
+`PATCH status=filed` only queues; the `file-resources` job (worker) copies to the NAS. If something looks stuck in
+`filing`, check `GET /api/nas/status` (an unmounted NAS keeps them queued) and `GET /api/jobs/file-resources/status`.
+`audio-manager-file-resources.timer` (every 5 min) is a safety net; unit files are in `deploy/systemd/`.
+
 ## refile-all is manual-only
 
 `audio-manager-refile-all.timer` is **deliberately disabled** (2026-09-21). Renaming a session or project changes

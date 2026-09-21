@@ -167,6 +167,33 @@ No migration was needed (the user confirmed only test data exists), so the chang
 - **Not built:** a manage screen for projects/sessions (package 8); adopting DAW project files and moving a project
   folder as a unit (package 5/9); split/multitrack grouping suggestions; the placement behaviour.
 
+## Built 2026-09-21: Inbox hardening + background filing (work package 5, first half)
+- **Filing is now a background job** (`jobs/filing.py`, job `file-resources`). Copying + verifying + reading back
+  a 700 MB file takes longer than nginx will wait, so `PATCH status=filed` only validates and sets **`filing`**;
+  the worker drains every `filing` resource. States: pending-review -> filing -> filed | failed (stage `move`,
+  with the reason and the file still in staging; `retry-failed` or filing again re-queues it). A dropped NAS
+  leaves resources in `filing` and stops the run (not a recording failure). A client can no longer set
+  `filing`/`failed` itself. The detail screen polls while filing. A **5-minute timer**
+  (`audio-manager-file-resources.timer`, installed and enabled) sweeps anything stranded.
+- **Inbox pull** (`drive_inbox_pull`, `jobs/inbox_rules.py`): now **recursive** (`rclone lsjson -R`), never scans
+  `_processed`, and **classifies** each file: audio -> ingested; sidecar (`.reapeaks`, `.pkf`) -> attached to its
+  audio (matched by Inbox folder + name, case-insensitive; held in the Inbox until the audio exists);
+  **project files (`.RPP`, `.sesx`, ...) are left in the Inbox and reported, not imported** (where one belongs
+  depends on where its audio ends up; adoption from the NAS is a later feature); junk (`.DS_Store`, `~$`, temp
+  files) and unknown types are ignored and counted.
+- **Each Inbox file is staged in its own directory** (`staging/inbox/<hash of its Inbox path>/`): `STE-000.wav`
+  exists in several folders and one shared directory would let them overwrite each other. Quarantined
+  duplicates are prefixed with a checksum so two duplicates with one name can't overwrite either. The Inbox folder is
+  kept on the resource (`filename_info.folder`).
+- **Sidecars** are `role=sidecar` resources (`derived_from` = the audio, status `attached` -> `filed`), copied into
+  the audio's NAS folder right after it and never overwriting; hidden from the review queue and the library
+  (`GET /api/resources` excludes sidecar/project-file unless `role=` is given). A failed sidecar never fails
+  the recording.
+- Verified: 74 unit tests + a 23-check live run (fake rclone; real DB, NAS and **worker**): two `STE-000.wav`
+  from different folders, sidecar attach + copy, orphan sidecar held, project file held, junk ignored,
+  background filing, name clash fails safely and re-files after a session is chosen.
+- **Still to build for the archive import:** batch review actions (next), and the NAS backup on the user's side.
+
 ## Work packages (proposed order; each ends with something checkable)
 Items marked **[app]** are backend work the Android app (PLAN §19) needs;
 they are scheduled here on purpose, early, and each also benefits the web UI.

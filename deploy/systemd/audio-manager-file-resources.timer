@@ -1,0 +1,16 @@
+# Save as /etc/systemd/system/audio-manager-file-resources.timer
+# Safety net only: filing is normally started the moment someone presses "File", but the job
+# queue allows one active row per job name, so a request made at the instant a run is finishing
+# could otherwise wait. This sweeps anything left in the "filing" state, and retries a run that
+# stopped because the NAS was unmounted.
+
+[Unit]
+Description=Run audio-manager file-resources every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

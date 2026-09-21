@@ -1,0 +1,8 @@
+# Save as /etc/systemd/system/audio-manager-file-resources.service
+[Unit]
+Description=Audio Manager job: file-resources
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -sf -X POST "http://127.0.0.1:5000/api/jobs/file-resources/run?triggered_by=scheduled"
