@@ -24,7 +24,7 @@ from config import Config
 from app import create_app
 from app.extensions import db
 from app.models import JobRun
-from jobs.queue import claim_next, mark_success, mark_failure, reap_stale_jobs, _worker_id
+from jobs.queue import claim_next, mark_success, mark_failure, reap_stale_jobs, requeue_dead_local_jobs, _worker_id
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("worker")
@@ -69,6 +69,8 @@ def run_forever():
     with app.app_context():
         from app.schema import ensure_schema
         ensure_schema(db)  # the web service does this too; harmless if it already has
+        for item in requeue_dead_local_jobs():
+            log.warning("re-queued %s (%s): its previous worker (%s) no longer exists", item.id, item.job_name, "restarted")
         while not _shutdown:
             try:
                 reaped = reap_stale_jobs()

@@ -104,30 +104,39 @@ def file_resources():
         _record_run("error", f"NAS unavailable, nothing filed (they stay 'filing'): {reason}")
         return {"status": "error", "detail": f"NAS unavailable: {reason}"}
 
-    filed, failed = [], []
+    filed, failed, skipped = [], [], []
     while True:
-        batch = Resource.query.filter_by(status="filing").order_by(Resource.created_at).all()
-        batch = [r for r in batch if r.id not in filed and r.id not in failed]
-        if not batch:
+        ids = [rid for (rid,) in db.session.query(Resource.id).filter_by(status="filing").order_by(Resource.created_at).all()
+               if rid not in filed and rid not in failed and rid not in skipped]
+        if not ids:
             break
-        for resource in batch:
+        for rid in ids:
+            resource = db.session.get(Resource, rid)   # re-read each one: it may have changed or vanished meanwhile
+            if resource is None or resource.status != "filing":
+                skipped.append(rid)                     # deleted, or already dealt with: nothing to do
+                continue
             try:
                 file_resource(resource)
-                filed.append(resource.id)
+                filed.append(rid)
             except NasUnavailable as e:
                 db.session.rollback()
                 _record_run("error", f"NAS became unavailable part-way: {e}. filed={len(filed)}")
                 return {"status": "error", "detail": str(e), "filed": filed, "failed": failed}
             except Exception as e:  # noqa: BLE001 -- one bad file must not stop the rest
                 db.session.rollback()
-                resource = db.session.get(Resource, resource.id)
+                failed.append(rid)
+                log.warning("filing %s failed: %s", rid, e)
+                resource = db.session.get(Resource, rid)
+                if resource is None:
+                    continue
                 resource.status = "failed"
                 resource.failure_stage = "move"
                 resource.failure_detail = str(e)
-                db.session.add(FileEvent(resource_id=resource.id, event_type="failed", detail=f"filing failed: {e}"))
-                db.session.commit()
-                failed.append(resource.id)
-                log.warning("filing %s failed: %s", resource.id, e)
+                db.session.add(FileEvent(resource_id=rid, event_type="failed", detail=f"filing failed: {e}"))
+                try:
+                    db.session.commit()
+                except Exception:  # noqa: BLE001
+                    db.session.rollback()
 
     # Sidecars that arrived while their audio was mid-filing (or that failed once): copy them now.
     for parent in Resource.query.filter(Resource.status == "filed", Resource.role.in_(("original", "edit")),

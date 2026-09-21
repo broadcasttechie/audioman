@@ -105,6 +105,21 @@ try:
         check("with the NAS down, NAS-hosted files are skipped, not failed", out["status"] == "success" and rr.waveform_error is None and rr.preview_error is None)
         wr2 = poll(c, f"/api/resources/{REAL}/waveform", secs=120)
         check("and once it is back they are generated", wr2.status_code == 200)
+        # ---- a resource that vanishes mid-run must not break the sweeper (found by a regression run) ----------
+        import uuid as _uuid
+        real_ids = pv._candidate_ids
+        pv._candidate_ids = lambda: [str(_uuid.uuid4())] + real_ids()
+        try:
+            out = pv.generate_previews()
+        finally:
+            pv._candidate_ids = real_ids
+        check("the previews sweeper skips an id that no longer exists", out["status"] in ("success", "partial"))
+        import jobs.filing as filing
+        out = filing.file_resources()
+        check("the filing sweeper runs cleanly when nothing is waiting", out["status"] == "success")
+        from app.extensions import db as _db
+        _db.session.execute(_db.text("SELECT 1"))
+        check("the session is still healthy afterwards", True)
         print("\nALL PREVIEW CHECKS PASSED")
 finally:
     with app.app_context():

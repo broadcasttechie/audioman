@@ -137,6 +137,42 @@ def mark_failure(item, detail):
     db.session.commit()
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True   # exists, just not ours to signal
+    return True
+
+
+def requeue_dead_local_jobs():
+    """
+    Called once when a worker starts. A worker that was restarted (deploy, crash, `systemctl restart`)
+    leaves its claimed row 'running' with a locked_by of "<host>:<pid>". Without this, that row keeps
+    blocking new runs of the same job (one active row per job name) until reap_stale_jobs() gives up on it
+    an hour later. Rows locked by a process on THIS host that no longer exists are put straight back in the
+    queue, without counting as a failed attempt (the job didn't fail, its worker went away). Rows locked by
+    a live process, or by another host, are left alone.
+    """
+    host = socket.gethostname()
+    requeued = []
+    for item in JobQueueItem.query.filter(JobQueueItem.status == "running").all():
+        who = item.locked_by or ""
+        item_host, _, pid = who.rpartition(":")
+        if item_host != host or not pid.isdigit() or _pid_alive(int(pid)):
+            continue
+        item.status = "queued"
+        item.locked_by = None
+        item.started_at = None
+        item.next_attempt_at = datetime.utcnow()
+        requeued.append(item)
+    if requeued:
+        db.session.commit()
+    return requeued
+
+
 def reap_stale_jobs():
     """
     If a worker is killed (OOM, crash, `systemctl kill`) mid-job, its

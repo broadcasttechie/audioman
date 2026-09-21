@@ -245,19 +245,51 @@ def _needs_work():
     ).order_by(Resource.created_at.desc())
 
 
+def _candidate_ids():
+    return [rid for (rid,) in _needs_work().with_entities(Resource.id).all()]
+
+
+def _commit():
+    """Commit, or roll back and say so. A row deleted while we were busy (or any other write failure) must
+    cost that one resource, never the whole run or the session."""
+    try:
+        db.session.commit()
+        return True
+    except Exception as e:  # noqa: BLE001
+        db.session.rollback()
+        log.warning("could not save a preview result: %s", e)
+        return False
+
+
+def _record_failure(rid, kind, message):
+    r = db.session.get(Resource, rid)
+    if r is None:
+        return
+    if kind == "waveform":
+        r.waveform_error = message
+    else:
+        r.preview_error = message
+    db.session.add(FileEvent(resource_id=rid, event_type="failed", detail=f"{kind} generation failed: {message}"))
+    _commit()
+
+
 def generate_previews():
     """
     Make the waveform and preview for every recording that lacks them, newest first, until the run's
     time budget is spent (the next run continues). A failure is stored on the resource (with the
     reason) and not retried until someone asks (`POST /api/resources/<id>/previews/regenerate`).
     A missing source is not a failure while the NAS is unmounted: those are simply skipped this run.
+    Works from ids and re-reads each resource, so one deleted mid-run is skipped rather than breaking the run.
     """
     started = time.time()
     nas_ok, _ = nas_status()
     made, failed, skipped = [], [], 0
-    for r in _needs_work().all():
+    for rid in _candidate_ids():
         if time.time() - started > Config.PREVIEW_RUN_SECONDS:
             break
+        r = db.session.get(Resource, rid)
+        if r is None:
+            continue
         src = r.nas_path or r.staging_path
         if not src or (is_nas_path(src) and not nas_ok):
             skipped += 1
@@ -265,35 +297,40 @@ def generate_previews():
         if not os.path.exists(src):
             r.waveform_error = r.waveform_error or "the audio file is missing"
             r.preview_error = r.preview_error or "the audio file is missing"
-            db.session.commit()
-            failed.append(r.id)
+            _commit()
+            failed.append(rid)
             continue
 
+        checksum = r.checksum
         if r.size_bytes is None:
             r.size_bytes = os.path.getsize(src)
-        for kind in ("waveform", "preview"):
-            done_at = r.waveform_at if kind == "waveform" else r.preview_at
-            err = r.waveform_error if kind == "waveform" else r.preview_error
-            if done_at or err:
-                continue
+        needs = [k for k, done, err in (("waveform", r.waveform_at, r.waveform_error), ("preview", r.preview_at, r.preview_error))
+                 if not done and not err]
+        for kind in needs:
             try:
                 if kind == "waveform":
-                    generate_waveform(src, r.checksum)
-                    r.waveform_at, r.waveform_error = datetime.utcnow(), None
+                    generate_waveform(src, checksum)
                 else:
-                    generate_preview(src, r.checksum)
-                    r.preview_at, r.preview_error = datetime.utcnow(), None
-                made.append(f"{kind}:{r.id}")
+                    generate_preview(src, checksum)
             except Exception as e:  # noqa: BLE001 -- one bad file must not stop the rest
                 message = str(e)[:500] or e.__class__.__name__
-                if kind == "waveform":
-                    r.waveform_error = message
-                else:
-                    r.preview_error = message
-                db.session.add(FileEvent(resource_id=r.id, event_type="failed", detail=f"{kind} generation failed: {message}"))
-                failed.append(r.id)
-                log.warning("%s for %s failed: %s", kind, r.id, message)
-            db.session.commit()
+                log.warning("%s for %s failed: %s", kind, rid, message)
+                _record_failure(rid, kind, message)
+                failed.append(rid)
+                r = db.session.get(Resource, rid)
+                if r is None:
+                    break
+                continue
+            r = db.session.get(Resource, rid)
+            if r is None:
+                delete_cache(checksum)      # the resource vanished while we worked: don't leave orphans
+                break
+            if kind == "waveform":
+                r.waveform_at, r.waveform_error = datetime.utcnow(), None
+            else:
+                r.preview_at, r.preview_error = datetime.utcnow(), None
+            if _commit():
+                made.append(f"{kind}:{rid}")
 
     remaining = _needs_work().count()
     status = "partial" if failed else "success"

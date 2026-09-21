@@ -263,7 +263,7 @@ def nas_to_drive_library():
         return {"status": "error", "detail": detail}
     try:
         subprocess.run(
-            ["rclone", "sync", Config.NAS_LIBRARY_ROOT, remote_path],
+            ["rclone", "sync", Config.NAS_LIBRARY_ROOT, remote_path, "--exclude", Config.NAS_MARKER_FILE],
             check=True, capture_output=True, text=True,
             timeout=Config.RCLONE_TRANSFER_TIMEOUT_SECONDS,
         )
@@ -286,7 +286,7 @@ def library_verify():
         return {"status": "error", "detail": detail}
     try:
         result = subprocess.run(
-            ["rclone", "check", Config.NAS_LIBRARY_ROOT, remote_path],
+            ["rclone", "check", Config.NAS_LIBRARY_ROOT, remote_path, "--exclude", Config.NAS_MARKER_FILE],
             capture_output=True, text=True,
             timeout=Config.RCLONE_TRANSFER_TIMEOUT_SECONDS,
         )

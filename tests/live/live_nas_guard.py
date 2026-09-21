@@ -7,11 +7,12 @@ import time
 
 from app import create_app
 from app.extensions import db
-from app.models import Resource, FileEvent
+from app.models import Resource, FileEvent, JobRun
 from config import Config
 from jobs.ingest import ingest_staged_file
 
 app = create_app()
+GUARDED_JOBS = ("refile-all", "verify-integrity", "find-orphans")
 NAME = "ZZTEST_nas_guard.wav"
 created = []
 
@@ -42,6 +43,8 @@ def check(label, cond, extra=""):
 try:
     with app.app_context():
         client = app.test_client()
+        # This test makes the guarded jobs refuse (recording an error). Remember their state so it can be put back.
+        saved_runs = {n: (lambda r: (r.status, r.log_tail, r.last_run_at) if r else None)(db.session.get(JobRun, n)) for n in GUARDED_JOBS}
         check("nas status endpoint healthy", client.get("/api/nas/status").status_code == 200)
 
         # --- 1. guard: NAS 'unavailable' -> 503, nothing changed --------------
@@ -110,6 +113,15 @@ try:
         print("\nALL E2E CHECKS PASSED")
 finally:
     with app.app_context():
+        for name, was in globals().get("saved_runs", {}).items():
+            row = db.session.get(JobRun, name)
+            if was is None and row is not None:
+                db.session.delete(row)
+            elif was is not None:
+                row = row or JobRun(job_name=name)
+                row.status, row.log_tail, row.last_run_at = was
+                db.session.merge(row)
+        db.session.commit()
         for rid in created:
             r = db.session.get(Resource, rid)
             if not r:

@@ -14,7 +14,9 @@ Immich). The goals these exist to satisfy:
   as done).
 """
 import random
+import re
 import time
+from urllib.parse import urlsplit
 
 import requests
 
@@ -23,6 +25,31 @@ from config import Config
 
 class ServiceUnavailable(Exception):
     """Raised when an external call exhausts its retries."""
+
+
+class ServiceRejected(ServiceUnavailable):
+    """The service answered but refused the request (a 4xx): a configuration problem such as a wrong URL,
+    a plain-HTTP URL for an HTTPS-only server, or a bad API key. Retrying won't help, but the message says why.
+    A subclass of ServiceUnavailable so every existing caller treats it as "couldn't get an answer, try later"."""
+
+
+_SECRET_PARAM = re.compile(r"((?:api[_-]?key|token|secret|password)=)[^&\s'\")]+", re.IGNORECASE)
+
+
+def scrub(text):
+    """Remove secret-looking query parameters from a message before it is logged, stored or shown.
+    requests puts the full URL in its exception text, and Dawarich takes its API key as a query parameter."""
+    return _SECRET_PARAM.sub(r"\1***", str(text))
+
+
+def _rejection_message(response):
+    """'HTTP 400 from https://host: <title or first words of the body>' with no query string."""
+    parts = urlsplit(response.url or "")
+    where = f"{parts.scheme}://{parts.netloc}" if parts.netloc else "the service"
+    body = response.text or ""
+    m = re.search(r"<title>(.*?)</title>", body, re.IGNORECASE | re.DOTALL)
+    snippet = re.sub(r"\s+", " ", (m.group(1) if m else body)).strip()[:160]
+    return scrub(f"HTTP {response.status_code} from {where}: {snippet}" if snippet else f"HTTP {response.status_code} from {where}")
 
 
 def call_with_retry(fn, max_attempts=None, base_delay=None, max_delay=8):
@@ -43,7 +70,7 @@ def call_with_retry(fn, max_attempts=None, base_delay=None, max_delay=8):
             return fn()
         except requests.exceptions.HTTPError as e:
             if e.response is not None and 400 <= e.response.status_code < 500:
-                raise
+                raise ServiceRejected(_rejection_message(e.response)) from None   # `from None`: the chained error holds the URL
             last_exception = e
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
             last_exception = e
@@ -53,7 +80,7 @@ def call_with_retry(fn, max_attempts=None, base_delay=None, max_delay=8):
             delay += random.uniform(0, delay * 0.1)  # jitter
             time.sleep(delay)
 
-    raise ServiceUnavailable(str(last_exception))
+    raise ServiceUnavailable(scrub(last_exception)) from None
 
 
 class CircuitBreaker:
