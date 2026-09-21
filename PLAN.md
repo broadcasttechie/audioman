@@ -1428,3 +1428,68 @@ noise and the `_processed` cleanup is the cost lever.
 
 Before step 2, walk the remaining journeys (event first: show across nights,
 one or several recorders, multitrack) so the session boundary is right.
+
+## 19. Android companion app — PLAN ONLY (do not build until explicitly asked)
+
+**Instruction (2026-09-21): this is planning only, for a while. No app code,
+no server work done *for* the app, until the user explicitly asks.**
+
+### 19.1 Scope decided
+- **v1 = an uploader for files on attached storage** (an SD card in a USB
+  reader, or a recorder in mass-storage mode plugged into the phone). Not a
+  recorder, not a library browser.
+- **Recording in the app is a good idea, kept as a later, separate option**
+  (§16 notes: USB audio input, foreground service, exact timestamp at the
+  source). Not part of v1.
+
+### 19.2 Proposed behaviour of v1 (not decided in detail)
+- Attach storage → the user picks the folder once → the app lists audio files
+  it hasn't uploaded before → uploads → the server confirms → the app marks
+  them done. **The card is treated as read-only by default: nothing is ever
+  deleted from field media.**
+- **Recorder profile chosen per card** (e.g. "Zoom H1n", "Insta360") so the
+  server applies the right filename pattern and clock rules (§18.5c/f) — the
+  phone's clock is the *upload* time and says nothing about when a file was
+  recorded, so the app must not claim a capture time for recorded-earlier
+  files.
+- **Batch assignment at upload:** choose project/session (or "leave for
+  review") for everything selected, so files arrive already grouped, e.g.
+  "Show X, night 2".
+- Send each file's relative folder path as a **source-path hint** (the same
+  idea as `drive_inbox_path` for the Inbox, and it matters for `STE-` files
+  whose only context is the folder name).
+- Filter by extension on the phone: skip sidecars/peak files unless the
+  sidecar rules (§18.5i) say to send them alongside their audio.
+- Android access to attached storage goes through the Storage Access
+  Framework (user grants a folder, files are read via document URIs, not
+  paths) — from general knowledge, **not verified here**; confirm before
+  designing further.
+- Work runs in a foreground service with WorkManager-style retry; prefer
+  Wi-Fi/VPN, tolerate the phone not being on the VPN (§16); hash the file
+  while streaming it; never mark done until the server returns a matching
+  checksum.
+
+### 19.3 What the server would need (only when asked)
+The upload endpoint exists (`POST /api/ingest/upload`, `X-Upload-Key`, runs
+the shared ingest synchronously) but is not sized for this. Gaps, all listed
+so nothing is forgotten, none scheduled:
+- **Large files:** 30-minute Insta360 parts are ~690 MB. Needs a
+  chunked/resumable upload, Flask `MAX_CONTENT_LENGTH` and nginx
+  `client_max_body_size`/timeouts set.
+- **Disk admission:** uploads bypass the Inbox disk-budget queue
+  (`jobs/disk_budget.py`), so they must be refused with a "try later"
+  response when staging is full.
+- **Idempotent + confirmable:** dedupe by sha256 already exists; needs a
+  "have you got this checksum?" query so the app can skip and confirm.
+- **Metadata block** with the upload (recorder profile, project/session,
+  source path, title, notes); confirmed-date fields only if the app truly
+  knows the capture time.
+- **Auth:** shared key is enough on the VPN; per-device tokens if external
+  access is ever revisited (§16).
+
+### 19.4 Later, plan-only options
+Recording in the app (exact time and timezone stamped at the source, optional
+GPS, project/session picked before recording); browsing/playing/tagging from
+the phone; notifications when transcripts finish. Native Kotlin is the likely
+tool, since recording, USB and background work are platform-specific — not
+decided.

@@ -125,6 +125,12 @@ update DEPLOYMENT.md for the Library/disk-queue/audiowaveform work.
 8. Synology NFS export + mount (`nfs: audio-library`, `mp0`), UniFi reservation
    and DNS, PBS/replication. Needed before the archive import. (WP4 gate)
 
+## Android app — PLAN ONLY
+v1 is an **uploader for files on attached storage** (USB card reader /
+recorder), not a recorder; recording is a later option. **Do not build the app
+or server work for it until the user explicitly asks.** Plan and server gap
+list: PLAN.md §19.
+
 ## Not decided / parked
 Private flag; encryption at rest; soundcheck-vs-show sessions; tag "kind";
 semantic search; git remote; nginx `client_max_body_size` and Flask
