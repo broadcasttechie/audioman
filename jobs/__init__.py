@@ -12,6 +12,7 @@ from .maintenance import refile_all, verify_integrity, find_orphans, retry_faile
 from .enrich import enrich_locations, enrich_photos
 from .export import process_exports
 from .filing import file_resources
+from .previews import generate_previews
 
 JOB_REGISTRY.update({
     "drive-inbox-pull": drive_inbox_pull,
@@ -25,4 +26,5 @@ JOB_REGISTRY.update({
     "enrich-photos": enrich_photos,
     "process-exports": process_exports,
     "file-resources": file_resources,
+    "generate-previews": generate_previews,
 })

@@ -241,6 +241,9 @@ def drive_inbox_pull():
     if ignored:
         log += f", ignored {ignored} non-audio file(s)"
     _record_run("drive-inbox-pull", status, log)
+    if pulled:
+        from .queue import enqueue
+        enqueue("generate-previews", triggered_by="inbox-pull")   # waveforms/previews for what just arrived
     return {"status": status, "pulled": pulled, "failed": failed, "deferred": deferred,
             "held_project_files": held_project_files, "ignored": ignored}
 

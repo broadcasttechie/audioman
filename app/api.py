@@ -365,6 +365,11 @@ def _resource_to_dict(r: Resource):
         "derived_from_id": r.derived_from_id,
         "track_label": r.track_label,
         "notes": r.notes,
+        "size_bytes": r.size_bytes,
+        "has_waveform": r.waveform_at is not None,
+        "has_preview": r.preview_at is not None,
+        "waveform_error": r.waveform_error,
+        "preview_error": r.preview_error,
         "status": r.status,
         "captured_at": to_utc_iso(r.captured_at),
         "captured_at_source": r.captured_at_source,
@@ -442,6 +447,56 @@ def stream_audio(resource_id):
                 abort(503, description=f"NAS unavailable: {nas_reason}")
         abort(404, description="audio file not found on disk")
     return send_file(path, conditional=True)
+
+
+def _derived_response(r, kind):
+    """Serve a generated waveform/preview, or say it is on its way (202) and make sure the sweeper runs."""
+    from jobs import previews
+    if kind == "waveform":
+        ready, err = r.waveform_at, r.waveform_error
+        path, mimetype = previews.waveform_path(r.checksum), "application/octet-stream"
+    else:
+        ready, err = r.preview_at, r.preview_error
+        path, mimetype = previews.preview_path(r.checksum), "audio/mp4"
+    if ready and os.path.exists(path):
+        # Content-addressed by checksum, so a cached copy can never be stale. send_file handles Range.
+        return send_file(path, mimetype=mimetype, conditional=True, max_age=3600)
+    if ready:  # marked generated but the cache file is gone: heal by regenerating
+        if kind == "waveform":
+            r.waveform_at = None
+        else:
+            r.preview_at = None
+        db.session.commit()
+    elif err:
+        return jsonify({"status": "failed", "error": err}), 500
+    from jobs.queue import enqueue
+    enqueue("generate-previews", triggered_by="requested")
+    return jsonify({"status": "generating"}), 202
+
+
+@bp.get("/resources/<resource_id>/waveform")
+def get_waveform(resource_id):
+    """The peaks as audiowaveform's native binary `.dat` (its header carries sample rate and samples per pixel)."""
+    return _derived_response(Resource.query.get_or_404(resource_id), "waveform")
+
+
+@bp.get("/resources/<resource_id>/preview")
+def get_preview(resource_id):
+    """A compressed AAC listening copy, cheap to stream to a phone. Supports HTTP Range."""
+    return _derived_response(Resource.query.get_or_404(resource_id), "preview")
+
+
+@bp.post("/resources/<resource_id>/previews/regenerate")
+def regenerate_previews(resource_id):
+    """Throw away the waveform and preview and rebuild them (also the retry after a failure)."""
+    from jobs import previews
+    from jobs.queue import enqueue
+    r = Resource.query.get_or_404(resource_id)
+    previews.delete_cache(r.checksum)
+    r.waveform_at = r.preview_at = r.waveform_error = r.preview_error = None
+    db.session.commit()
+    enqueue("generate-previews", triggered_by="regenerate")
+    return jsonify({"status": "queued"}), 202
 
 
 @bp.get("/nas/status")

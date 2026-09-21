@@ -73,6 +73,16 @@ class Config:
     DAWARICH_API_URL = os.environ.get("DAWARICH_API_URL", "")
     DAWARICH_API_KEY = os.environ.get("DAWARICH_API_KEY", "")
 
+    # --- Waveforms and listening copies (jobs/previews.py): derived files cached on LOCAL disk, keyed by the
+    # file's sha256 (never the NAS) ---
+    WAVEFORM_DIR = os.environ.get("WAVEFORM_DIR", "/var/lib/audio-manager/waveforms")
+    PREVIEW_DIR = os.environ.get("PREVIEW_DIR", "/var/lib/audio-manager/previews")
+    PEAKS_PER_SECOND = 100            # one dense tier; measured ~180 KB per 15 minutes
+    PREVIEW_BITRATE_KBPS = 160        # stereo AAC; mono files get 60% of this. Quality/size trade-off is the user's call.
+    WAVEFORM_TIMEOUT_SECONDS = 1200
+    PREVIEW_TIMEOUT_SECONDS = 1800
+    PREVIEW_RUN_SECONDS = 600         # one sweeper run stops starting new files after this long
+
     # --- Clip export (legacy path, superseded by Export workflow below —
     # kept only so an old export from before this change still resolves) ---
     CLIPS_EXPORT_DIR = os.environ.get("CLIPS_EXPORT_DIR", "/var/lib/audio-manager/clips")

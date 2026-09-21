@@ -23,6 +23,7 @@ Run one (from the dev machine; needs `ssh pmx2`):
 | `live_inbox_disk_budget.py` | the Inbox pull's disk admission (fake rclone) |
 | `live_inbox_and_filing.py` | recursive Inbox pull, sidecars, held project files, background filing through the real worker |
 | `live_batch_review.py` | the batch endpoint, incl. filing through the worker |
+| `live_previews.py` | waveform + listening-copy generation through the worker, failures, NAS-down skipping, the real 15-minute file |
 
 They assume the real resource `66482729-...` exists (the first test recording); update the constant if it is removed.
 Running them while a real Inbox pull or filing is in progress could interleave with it; do it when the queue is idle.

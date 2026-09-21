@@ -1,0 +1,15 @@
+# Save as /etc/systemd/system/audio-manager-generate-previews.timer
+# Safety net: waveforms and listening copies are normally started when files arrive or are opened, but a run
+# stops after PREVIEW_RUN_SECONDS, so a big backlog (the archive import) needs repeated runs, and anything
+# skipped while the NAS was unmounted is picked up once it is back.
+
+[Unit]
+Description=Run audio-manager generate-previews every 10 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

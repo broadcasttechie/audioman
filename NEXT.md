@@ -207,6 +207,35 @@ No migration was needed (the user confirmed only test data exists), so the chang
 - **Regression suite:** the live checks are kept in `tests/live/` (README explains how to run them on the
   container). Unit tests: 74. All live checks pass after the refactor.
 
+## Built 2026-09-21: waveforms, listening copies and the player (work package 6, first half)
+- **`generate-previews` sweeper job** (`jobs/previews.py`) makes, per recording, a **waveform** and a compressed
+  **listening copy**, cached on **local disk by the file's sha256** (`/var/lib/audio-manager/{waveforms,previews}/<aa>/<sha>`):
+  refiling/renaming can't invalidate them, an edit is a new file so it can't go stale. Triggered when the Inbox pull
+  brings files in, when a client asks for one that's missing, and by a 10-minute timer (installed) for backlogs; each
+  run stops after `PREVIEW_RUN_SECONDS`. NAS-hosted files are skipped (not failed) while the NAS is down.
+- **Waveform:** `ffmpeg` (mono, 80 Hz high-pass, no resample) -> `audiowaveform` -> native 8-bit `.dat`, one dense
+  tier at 100 peaks/s (about 180 KB per 15 minutes). The header inside carries the sample rate and samples-per-pixel,
+  so the browser maps time exactly and there is no playhead drift. **No fallback engine:** a missing/failed
+  `audiowaveform` is recorded on the resource (`waveform_error`) and logged, never masked. A `.json` beside each records engine,
+  version, source checksum and parameters. Timeouts, `nice`, both processes killed on timeout, partial files removed.
+- **Listening copy:** AAC in `.m4a`, 160 kbps stereo / 96 kbps mono (`PREVIEW_BITRATE_KBPS`; **quality is the user's
+  call, not yet asked**). Real 15-minute file: 18 MB vs 346 MB, 16 s to make; waveform 2.5 s.
+- **API:** `GET /api/resources/<id>/waveform` (binary) and `/preview` (audio, Range) return 202 `generating` while
+  pending and start the job, 500 `failed` + reason after a failure, self-heal if the cache file vanished;
+  `POST .../previews/regenerate` retries. Resources report `has_waveform`, `has_preview`, `*_error`, `size_bytes`
+  (backfilled for existing rows by the sweeper).
+- **Detail screen:** a waveform on a canvas (**my own renderer, not Peaks.js**: no downloaded library, no LGPL, no CDN, and
+  with one dense tier zooming is just choosing which slice to draw). Tap to seek, drag to pan, two-finger pinch or
+  ctrl+wheel or +/- to zoom, Fit; follows the playhead when zoomed; auto-gain for quiet files; dark-mode aware; the
+  player uses the listening copy when it exists. **Not run in a browser.** What was verified without one: the page's own
+  parser against the real `.dat` in Node, and the peaks against an independent ffmpeg measurement of the same audio
+  (log-level correlation **0.987**, 0.972 linear; the 5 loudest moments align to +/-0.2 s; agreement falls steadily as the
+  series are shifted apart). The recording is 32-bit float with overs (up to 3.4x full scale) that clip at full height in
+  the 16-bit pipeline; that only affects display.
+- Verified: 87 unit tests (incl. a silence-then-tone file proving the primary engine ran and the shape is right) and a
+  16-check live run through the real worker (`tests/live/live_previews.py`).
+- **Not built yet from package 6:** the reclaimable-space view.
+
 ## Work packages (proposed order; each ends with something checkable)
 Items marked **[app]** are backend work the Android app (PLAN §19) needs;
 they are scheduled here on purpose, early, and each also benefits the web UI.

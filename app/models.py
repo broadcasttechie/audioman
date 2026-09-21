@@ -101,6 +101,13 @@ class Resource(db.Model):
     notes = db.Column(db.Text)
     derived_from = db.relationship("Resource", remote_side="Resource.id", backref="edits")
 
+    size_bytes = db.Column(db.BigInteger, nullable=True)
+    # Derived playback files (jobs/previews.py). *_at set = generated; *_error set = failed, awaiting a manual retry.
+    waveform_at = db.Column(db.DateTime, nullable=True)
+    waveform_error = db.Column(db.Text, nullable=True)
+    preview_at = db.Column(db.DateTime, nullable=True)
+    preview_error = db.Column(db.Text, nullable=True)
+
     # pending-review | filed | archived | failed
     status = db.Column(db.String, default="pending-review", index=True)
 

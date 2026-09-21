@@ -94,6 +94,7 @@ def ingest_staged_file(local_path, drive_inbox_path=None):
     resource = Resource(
         checksum=checksum,
         filename=filename,
+        size_bytes=os.path.getsize(local_path),
         format=probe["format"],
         duration_seconds=probe["duration_seconds"],
         captured_at=capture["captured_at"],
@@ -138,7 +139,7 @@ def ingest_sidecar(local_path, drive_inbox_path, parent):
 
     resource = Resource(
         checksum=checksum, filename=filename, format=os.path.splitext(filename)[1].lstrip(".").lower() or None,
-        role="sidecar", derived_from_id=parent.id, status="attached",
+        role="sidecar", derived_from_id=parent.id, status="attached", size_bytes=os.path.getsize(local_path),
         project_id=parent.project_id, session_id=parent.session_id, category=parent.category,
         captured_at_precision="unknown", captured_at_source="manual",
         drive_inbox_path=drive_inbox_path, staging_path=local_path,
