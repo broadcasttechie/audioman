@@ -110,6 +110,21 @@ class Config:
     PLACE_BATCH = 100                      # locations named per sweeper run
     PLACE_MOVED_METRES = 50                # a location that moves less than this keeps its place name
 
+    # --- Split-file joining and multitrack grouping (jobs/grouping.py; PLAN 22). Detection is
+    # metadata-only and always a suggestion, never automatic; these tolerances only decide what
+    # gets *offered*. The actual join additionally re-checks the real audio format before touching
+    # any file. ---
+    SPLIT_GAP_MIN_SECONDS = -3                   # a "next part" starting slightly early (clock rounding) still counts
+    SPLIT_GAP_MAX_SECONDS = 30                   # observed real gap is ~2s; generous headroom above that
+    SPLIT_DURATION_TOLERANCE_FRACTION = 0.02     # how close to the profile's split_seconds counts as "a full part"
+    MULTITRACK_START_TOLERANCE_SECONDS = 5       # consecutive files within this many seconds may be one take
+    MULTITRACK_MAX_SPAN_SECONDS = 60             # a whole cluster (first file to last) can't be wider than this
+    MULTITRACK_DURATION_TOLERANCE_FRACTION = 0.02
+    MULTITRACK_BATCH_WINDOW_SECONDS = 600        # no-timestamp fallback: same folder, arrived within 10 minutes
+    GROUP_JOIN_TIMEOUT_SECONDS = 1800            # ffmpeg concat is a stream copy, but large files still take time
+    SUGGEST_GROUPINGS_INTERVAL_MIN = int(os.environ.get("SUGGEST_GROUPINGS_INTERVAL_MIN", 15))
+    JOIN_GROUPS_INTERVAL_MIN = int(os.environ.get("JOIN_GROUPS_INTERVAL_MIN", 5))
+
     # --- Clip export (legacy path, superseded by Export workflow below —
     # kept only so an old export from before this change still resolves) ---
     CLIPS_EXPORT_DIR = os.environ.get("CLIPS_EXPORT_DIR", "/var/lib/audio-manager/clips")

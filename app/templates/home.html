@@ -46,12 +46,14 @@ function render(d) {
   }
 
   const c = d.counts, lib = d.library;
-  root.append(el('div', { class: 'tiles' }, [
+  const tiles = [
     tile('/review', c.pending_review, c.pending_review === 1 ? 'to review' : 'to review'),
     tile('/library?status=filing', c.filing, 'being copied to the NAS'),
     tile('/library?status=failed', c.failed, 'failed', c.failed > 0),
     tile('/library', lib.files, `in the library \u00b7 ${lib.hours} h \u00b7 ${formatBytes(lib.bytes)}`),
-  ]));
+  ];
+  if (d.grouping_suggestions > 0) tiles.push(tile('/groups', d.grouping_suggestions, d.grouping_suggestions === 1 ? 'recording to join/group' : 'recordings to join/group'));
+  root.append(el('div', { class: 'tiles' }, tiles));
 
   if (d.categories.length) {
     root.append(el('h2', {}, ['Categories']));

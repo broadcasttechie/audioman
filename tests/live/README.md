@@ -27,6 +27,7 @@ Run one (from the dev machine; needs `ssh pmx2`):
 | `live_places.py` | place names from the real Photon: the queue, typed names, moving, Photon down, provider switching |
 | `live_map.py` | map config/pins with the Library's filters, unlocated counts, the track data the route map draws, choosing a location on the map |
 | `live_previews.py` | waveform + listening-copy generation through the worker, failures, NAS-down skipping, the real 15-minute file |
+| `live_grouping.py` | split-file detection and joining through the worker (a real 3-part join, dismiss/re-confirm, a real audio-format-mismatch refusal), multitrack detection via the folder fallback and confirm; uses a throwaway recorder profile so it never touches the real Insta360 mic profile |
 
 They assume the real resource `66482729-...` exists (the first test recording); update the constant if it is removed.
 Running them while a real Inbox pull or filing is in progress could interleave with it; do it when the queue is idle.

@@ -321,6 +321,28 @@ No migration was needed (the user confirmed only test data exists), so the chang
   clip calls with the page's rounding, the end-of-recording edge, all four export formats through the real worker and download).
   **Not verified: the look and feel in a real browser.**
 
+## Built 2026-09-22: split-file joining and multitrack grouping (PLAN 22)
+- **Split chains** (the Insta360 mic's 30-minute auto-split): detected from the real confirmed
+  chains and negative cases in `tests/fixtures/sample_filenames.txt`, offered at `/groups`, and on
+  "Join these into one file" actually joined in the background (`ffmpeg -c copy`, no re-encode) into
+  a new ordinary `pending-review` resource. **The parts are always kept**, never deleted, each
+  linked to the result (`joined_into_id`); the new file records `joined_from_ids` and is
+  `derived_from` the first part. A real audio-format mismatch (checked with ffprobe, not just the
+  filenames) refuses the join with a clear reason rather than re-encoding silently.
+- **Multitrack** (several files recorded at once): a suggestion only, never a merge — confirming
+  just labels the files (`track_label`) as tracks of one take. Detected two ways: files with a real
+  timestamp starting within a few seconds of each other, or (no sample files exist yet for this,
+  per the user) a same-Inbox-folder-and-arrival-time fallback. Both also require matching duration
+  and a shared filename prefix with a short varying remainder ("Tr1"/"Tr2", "CH01"/"CH02").
+- **Nothing is ever automatic**: every group is a suggestion (`/groups`, linked from Manage and a
+  Home tile) until confirmed or dismissed, and both actions stay reversible on the same group.
+- Verified: 22 new unit tests against the real fixture chains (no database) + a live run on the
+  real worker (an actual 3-part join with correct duration/provenance/audit trail, dismiss then
+  re-confirm, a real format-mismatch refusal, a real multitrack folder-fallback confirm). Full
+  regression after: 136 unit tests, all 15 live suites, 50 Node tests.
+- **Known gap:** multitrack detection is still unverified against a real multitrack recording (none
+  exist yet) — revisit once the user has real filenames from that kind of recorder.
+
 ## Fixed 2026-09-21 (found by a regression run and by looking at Home)
 - **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
 - **Stranded queue rows:** a worker restarted mid-job left its row `running`, which blocked new runs of that job for
@@ -366,15 +388,15 @@ checks (`tests/live/`).
 | 10 | Segments UI, then transcription worker | not started |
 
 **Not in the MVP, in the order I would do them:**
-1. **Split-file joining and multitrack/outing grouping** (Insta360 parts are exactly 1800 s with a ~2 s gap; `filename_info`
-   already carries what the matcher needs). Suggest-only; a join is a non-destructive ffmpeg concat kept in staging budget.
-2. **Package 4 -> 5 (upload v2) -> 6 (device export)** = the backend the Android app needs. The app itself stays plan-only.
-3. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
-4. **Non-destructive processing** (PLAN §21: gain/normalise, fades, filters, mono/stereo mix, sample-rate and bit-depth
+1. **Package 4 -> 5 (upload v2) -> 6 (device export)** = the backend the Android app needs. The app itself stays plan-only.
+2. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
+3. **Non-destructive processing** (PLAN §21: gain/normalise, fades, filters, mono/stereo mix, sample-rate and bit-depth
    conversion incl. 32-bit float, FLAC/MP3/Opus export) as a new step on the editor, building on the clip/export plumbing
    that already exists.
-5. **Placement/Drive copies** (needs the Drive remote decision: `drive.file` OAuth vs full OAuth vs skip).
-6. Smaller: DAW project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
+4. **Placement/Drive copies** (needs the Drive remote decision: `drive.file` OAuth vs full OAuth vs skip).
+5. Smaller: DAW project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
+
+~~Split-file joining and multitrack/outing grouping~~ **done 2026-09-22**, see the "Built" section above and PLAN §22.
 
 **Before the archive import:** back up the NAS share yourself; then drop the archive into the Drive Inbox in batches (the
 disk-space queue paces it; nothing is imported until a file has been stable for 5 minutes; 10 files per 15-minute run).

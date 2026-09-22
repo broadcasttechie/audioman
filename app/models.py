@@ -99,7 +99,22 @@ class Resource(db.Model):
     derived_from_id = db.Column(db.String, db.ForeignKey("resources.id"), nullable=True)
     track_label = db.Column(db.String, nullable=True)   # e.g. one mono track of a multitrack take
     notes = db.Column(db.Text)
-    derived_from = db.relationship("Resource", remote_side="Resource.id", backref="edits")
+    derived_from = db.relationship("Resource", remote_side="Resource.id", backref="edits", foreign_keys=[derived_from_id])
+
+    # Split-file / multitrack grouping (jobs/grouping.py; PLAN 22). group_id is shared by every
+    # member of one candidate/confirmed group; NULL means "not part of any group (yet)". A resource
+    # already carrying a group_id is never reconsidered by the detector, even if dismissed.
+    group_id = db.Column(db.String, nullable=True, index=True)
+    group_type = db.Column(db.String, nullable=True)     # split | multitrack
+    # suggested | dismissed | confirmed (multitrack) | joining | joined | join-failed (split)
+    group_status = db.Column(db.String, nullable=True)
+    group_reason = db.Column(db.Text, nullable=True)     # human-readable "why these belong together"
+    group_error = db.Column(db.Text, nullable=True)      # why a join failed, when group_status = join-failed
+    # Set on each source part once a split group has been joined into one new file.
+    joined_into_id = db.Column(db.String, db.ForeignKey("resources.id"), nullable=True)
+    # Set on the new joined file: the ordered source resource ids (derived_from_id is also the
+    # first of these, so the existing "edit points at its original" plumbing still works).
+    joined_from_ids = db.Column(db.JSON, nullable=True)
 
     size_bytes = db.Column(db.BigInteger, nullable=True)
     # Derived playback files (jobs/previews.py). *_at set = generated; *_error set = failed, awaiting a manual retry.
@@ -162,6 +177,10 @@ class RecorderProfile(db.Model):
     date_trust = db.Column(db.String, nullable=False, default="suggest")
     priority = db.Column(db.Integer, nullable=False, default=100)
     active = db.Column(db.Boolean, nullable=False, default=True)
+    # This recorder splits one continuous recording into consecutive files after this many
+    # seconds (the Insta360 mic's 30-minute limit = 1800); NULL for a recorder that doesn't
+    # split. Read by jobs/grouping.py to suggest re-joining a chain of parts.
+    split_seconds = db.Column(db.Integer, nullable=True)
 
 
 class Category(db.Model):
@@ -298,7 +317,7 @@ class FileEvent(db.Model):
 
     id = db.Column(db.String, primary_key=True, default=gen_uuid)
     resource_id = db.Column(db.String, db.ForeignKey("resources.id"), nullable=True)
-    # ingested | moved | refiled | drive-synced | failed | verified
+    # ingested | moved | refiled | drive-synced | failed | verified | joined
     event_type = db.Column(db.String, nullable=False)
     detail = db.Column(db.Text)
     occurred_at = db.Column(db.DateTime, default=datetime.utcnow)

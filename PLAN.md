@@ -868,7 +868,7 @@ names.
   (`audio_%{YY}%{MM}%{DD}_%{HH}%{MI}%{SS}_…`). The other recorders' patterns
   come from real examples — which is what unblocks §17.7.
 
-### 17.7 Split files and multitrack (recorded from discussion)
+### 17.7 Split files and multitrack (recorded from discussion) — built, see §22
 
 Two different things that both need "these files belong together":
 - **Split** (a recorder starting a new file every ~30 minutes) should end up
@@ -1647,4 +1647,78 @@ None of this has been run in a real browser (the browser tools ask for approval,
 recording page (it does not persist across pages). No undo for clip edits. Clips have no tags or notes in the editor yet (the
 API has `notes`). Select mode's one-finger drag competes with page scrolling on a phone, so the editor keeps a Move mode and the
 overview strip for navigation.
+
+
+## 22. Split-file joining and multitrack grouping (built 2026-09-22)
+
+Answers §17.7's "these files belong together" design (and the survey in §18.5f/§18.5g) with
+real code: the first item on NEXT.md's "not in the MVP" list, built after the user said "go
+ahead" to the proposed work order.
+
+### 22.1 Built
+- **Shared plumbing** (`jobs/grouping.py`), close to §17.7's proposal: `Resource.group_id` +
+  `group_type` (`split`|`multitrack`) mark a candidate/confirmed group; `group_status`
+  (`suggested`|`dismissed`|`confirmed`|`joining`|`joined`|`join-failed`) and `group_reason` /
+  `group_error` carry the human-readable state. A resource that already has a `group_id` is never
+  reconsidered by detection, even once dismissed — dismiss/confirm on the same `group_id` stay
+  available afterwards as a manual override (there is deliberately no separate "undismiss").
+- **Split detection**: per §17.6, `RecorderProfile.split_seconds` (only "Insta360 mic" has one,
+  1800, backfilled onto the existing live row since the seeder never updates an existing row by
+  name) marks a recorder that free-runs into consecutive files. A chain is 2+ files, same profile,
+  in time order, where every part but the last is within tolerance of `split_seconds` and each
+  next part starts a few seconds (tunable, `SPLIT_GAP_MIN/MAX_SECONDS`) after the previous part's
+  computed end. Tested against the real confirmed chains in `tests/fixtures/sample_filenames.txt`
+  (2026-09-17 10:07:46 → 10:37:48 → 11:07:48, and 2026-09-14 14:58:38 → 15:28:40) and
+  the real negative cases noted there (a short recording shortly after another isn't a chain; two
+  full-length parts hours apart aren't a chain).
+- **Multitrack detection**, per §18.5g's "no sample files yet, best-effort, always a suggestion":
+  two independent paths, tried in order after split claims its candidates. *By time*: files with an
+  exact timestamp starting within a few seconds of each other (single-linkage, capped so a long
+  drifting run can't be one cluster), agreeing on duration, sharing a filename prefix with a short
+  varying remainder (`_shared_label`: the lexicographic-min/max trick bounds the common prefix
+  across the whole set in one pass). *By folder+batch* (the stated fallback for a recorder with no
+  timestamp at all): same Inbox folder, arrived within a short window, same two duration/name
+  checks. Either way the varying part becomes `track_label` (never overwriting one already set).
+  Confirming a multitrack group touches no file — it only sets `group_status` and the labels.
+- **The join itself**, per §17.7's "a real ffmpeg concat, non-destructive": confirming a split
+  group enqueues the `join-groups` sweeper (same "PATCH sets a status, a worker does the file
+  work" shape as filing). Before touching anything it re-probes the *real* audio (codec, sample
+  format, rate, channels) and refuses a mismatched set outright rather than silently re-encoding,
+  and runs the disk-budget admission check (`jobs/disk_budget.py`, reused) so a big join waits its
+  turn instead of filling the disk. The concat itself is a stream copy (`ffmpeg -f concat -c copy`,
+  no re-encode) into its own staging directory; the output's duration is sanity-checked against the
+  sum of the parts before it's kept. The result becomes an ordinary new `pending-review` resource
+  (`role=edit`, `derived_from_id` = the first part, `joined_from_ids` = every source in order),
+  inheriting category/session/project only when every part already agrees — otherwise left for the
+  normal review flow, same as any other resource. **The source parts are kept, never deleted**,
+  each gaining `joined_into_id`; both sides get a `FileEvent(event_type="joined")` audit entry.
+- **API** (`app/api.py`): `GET /api/groups` (default: groups needing attention — suggested,
+  joining, join-failed; `?status=all` for the full history), `POST /api/groups/<id>/confirm`,
+  `POST /api/groups/<id>/dismiss`. `POST /api/jobs/suggest-groupings/run` and `.../join-groups/run`
+  come free from the existing generic job-runner. `RecorderProfile` CRUD gained `split_seconds`.
+- **UI**: `/groups` (linked from Manage, and from a Home tile once there's at least one
+  suggestion) lists groups needing a decision with each member's filename/date/duration/status,
+  "Join these into one file" / "These are tracks of one take", and "Not related"; a joined group
+  links to the new recording; a failed join shows why and offers "Try again". Not added to the
+  tab bar, same as Reclaim.
+- **Jobs**: `suggest-groupings` (every 15 min, and right after an Inbox pull that landed files, like
+  previews) and `join-groups` (every 5 min safety net; also run immediately on confirm, like
+  filing). Both installed and enabled.
+- Verified: 22 new unit tests against the real fixture chains and hand-built multitrack cases
+  (`tests/test_grouping.py`, no database), plus a live run (`tests/live/live_grouping.py`) against
+  the real worker/NAS: a real 3-part join (kept parts, correct duration/provenance/audit trail,
+  dismiss-then-reconfirm), a real format-mismatch refusal, and a real multitrack folder-fallback
+  confirm. Full regression (136 unit, 15 live suites, 50 Node tests) still green.
+
+### 22.2 Known gaps
+- No real multitrack recordings exist yet to calibrate against (§18.5g flagged this from the
+  start) — the heuristic is reasonable but unverified against a real multitrack take; revisit
+  once the user has real filenames.
+- A dismissed group has no separate "clear and re-detect" action — the only way back is
+  confirming the same `group_id` (still works; there's just no fresh re-scan of a dismissed set).
+- A joined split's source parts stay in Review/Library like any other resource; nothing hides or
+  auto-archives them, by design (never destructive), but it does mean a "done" chain still shows
+  three separate rows alongside the new one unless the user archives them by hand.
+- `/groups` has not been opened in a real browser, the same standing caveat as the rest of the UI
+  this session.
 

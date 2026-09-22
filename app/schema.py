@@ -27,6 +27,15 @@ ADD_COLUMNS = [
     ("projects", "placement", "VARCHAR NOT NULL DEFAULT 'nas'"),
     ("projects", "home", "VARCHAR NOT NULL DEFAULT 'nas'"),
     ("projects", "created_at", "TIMESTAMP DEFAULT NOW()"),
+    # Split-file / multitrack grouping (PLAN 22)
+    ("resources", "group_id", "VARCHAR"),
+    ("resources", "group_type", "VARCHAR"),
+    ("resources", "group_status", "VARCHAR"),
+    ("resources", "group_reason", "TEXT"),
+    ("resources", "group_error", "TEXT"),
+    ("resources", "joined_into_id", "VARCHAR REFERENCES resources(id)"),
+    ("resources", "joined_from_ids", "JSON"),
+    ("recorder_profiles", "split_seconds", "INTEGER"),
 ]
 
 
@@ -44,4 +53,12 @@ def ensure_schema(db):
         conn.execute(text(
             "UPDATE resources SET captured_at_precision = 'unknown' "
             "WHERE captured_at IS NULL AND captured_at_precision IS NULL"
+        ))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_resources_group_id ON resources (group_id)"))
+        # The Insta360 mic profile was seeded before split_seconds existed (jobs/profiles.py only
+        # inserts a missing row by name, never updates one that's already there), so a live install
+        # needs this one-time backfill to mark it as the 30-minute splitter (PLAN 18.5f).
+        conn.execute(text(
+            "UPDATE recorder_profiles SET split_seconds = 1800 "
+            "WHERE name = 'Insta360 mic' AND split_seconds IS NULL"
         ))

@@ -20,6 +20,11 @@ def manage():
     return render_template("manage.html", active_tab="manage")
 
 
+@ui_bp.get("/groups")
+def groups_page():
+    return render_template("groups.html", active_tab="manage")
+
+
 @ui_bp.get("/reclaim")
 def reclaim():
     return render_template("reclaim.html", active_tab="settings")

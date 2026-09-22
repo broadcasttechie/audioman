@@ -16,7 +16,7 @@ def ensure_default_profiles():
         db.session.add(RecorderProfile(
             name=spec["name"], patterns=list(spec["patterns"]), date_trust=spec["date_trust"],
             priority=spec["priority"], timezone=Config.DEFAULT_RECORDER_TIMEZONE,
-            clock_offset_seconds=0, active=True,
+            clock_offset_seconds=0, active=True, split_seconds=spec.get("split_seconds"),
         ))
         added.append(spec["name"])
     if added:

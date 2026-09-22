@@ -1,0 +1,15 @@
+# Save as /etc/systemd/system/audio-manager-join-groups.timer
+# Safety net only: a confirmed split join is normally started the moment you press "Join these
+# into one file". This sweeps anything left "joining" (e.g. a run that stopped because the NAS
+# was unmounted, or staging space was full and it's worth checking again).
+
+[Unit]
+Description=Run audio-manager join-groups every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

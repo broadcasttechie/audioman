@@ -244,6 +244,7 @@ def drive_inbox_pull():
     if pulled:
         from .queue import enqueue
         enqueue("generate-previews", triggered_by="inbox-pull")   # waveforms/previews for what just arrived
+        enqueue("suggest-groupings", triggered_by="inbox-pull")   # split/multitrack candidates among what just arrived
     return {"status": status, "pulled": pulled, "failed": failed, "deferred": deferred,
             "held_project_files": held_project_files, "ignored": ignored}
 

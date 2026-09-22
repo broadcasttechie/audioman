@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request, send_file, abort
 import os
 import re
 import uuid
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -400,6 +401,12 @@ def _resource_to_dict(r: Resource):
         "role": r.role or "original",
         "derived_from_id": r.derived_from_id,
         "track_label": r.track_label,
+        "group_id": r.group_id,
+        "group_type": r.group_type,
+        "group_status": r.group_status,
+        "group_reason": r.group_reason,
+        "joined_into_id": r.joined_into_id,
+        "joined_from_ids": r.joined_from_ids,
         "notes": r.notes,
         "size_bytes": r.size_bytes,
         "has_waveform": r.waveform_at is not None,
@@ -605,6 +612,8 @@ def overview():
     recent = datetime.utcnow() - timedelta(days=2)
     job_errors = [{"job": r.job_name, "at": to_utc_iso(r.last_run_at), "detail": (r.log_tail or "")[:160]}
                   for r in JobRun.query.filter(JobRun.status == "error", JobRun.last_run_at > recent).order_by(JobRun.job_name).all()]
+    grouping_suggestions = (db.session.query(db.func.count(db.func.distinct(Resource.group_id)))
+                            .filter(Resource.group_status == "suggested").scalar() or 0)
     return jsonify({
         "counts": {"pending_review": by_status.get("pending-review", 0), "filing": by_status.get("filing", 0),
                    "failed": by_status.get("failed", 0), "filed": by_status.get("filed", 0),
@@ -616,6 +625,7 @@ def overview():
         "recent_files": [{"id": r.id, "filename": r.filename, "category": r.category,
                           "captured_at": to_utc_iso(r.captured_at), "duration_seconds": r.duration_seconds} for r in recent_files],
         "health": {"nas": {"ok": nas_ok, "reason": nas_reason}, "job_errors": job_errors},
+        "grouping_suggestions": grouping_suggestions,
     })
 
 
@@ -686,6 +696,78 @@ def reclaimable_ack():
     return jsonify({"acknowledged": yes})
 
 
+# --- Split-file joining and multitrack grouping (jobs/grouping.py; PLAN 22) ---
+
+DEFAULT_GROUP_STATUSES = ("suggested", "joining", "join-failed")
+
+
+def _group_to_dict(group_id, group_type, members):
+    members = sorted(members, key=lambda r: r.captured_at or r.created_at)
+    return {
+        "group_id": group_id,
+        "type": group_type,
+        "status": members[0].group_status,
+        "reason": members[0].group_reason,
+        "error": members[0].group_error,
+        "joined_into_id": next((r.joined_into_id for r in members if r.joined_into_id), None),
+        "members": [{
+            "id": r.id, "filename": r.filename, "captured_at": to_utc_iso(r.captured_at),
+            "duration_seconds": r.duration_seconds, "status": r.status, "category": r.category,
+            "session_id": r.session_id, "project_id": r.project_id, "track_label": r.track_label,
+        } for r in members],
+    }
+
+
+@bp.get("/groups")
+def list_groups():
+    """Split/multitrack suggestions, grouped by group_id. `?status=` is a comma list, or 'all';
+    default is 'needs attention' (suggested, joining, join-failed) -- confirmed/joined/dismissed
+    groups are left out unless asked for."""
+    raw = request.args.get("status")
+    statuses = None if raw == "all" else ([s for s in raw.split(",") if s] if raw else list(DEFAULT_GROUP_STATUSES))
+
+    q = Resource.query.filter(Resource.group_id.isnot(None))
+    if statuses:
+        q = q.filter(Resource.group_status.in_(statuses))
+    by_group = defaultdict(list)
+    for r in q.all():
+        by_group[r.group_id].append(r)
+
+    groups = [_group_to_dict(gid, rows[0].group_type, rows) for gid, rows in by_group.items()]
+    groups.sort(key=lambda g: g["members"][0]["captured_at"] or "", reverse=True)
+    return jsonify(groups)
+
+
+@bp.post("/groups/<group_id>/confirm")
+def confirm_group(group_id):
+    """Split: starts the join in the background (jobs/grouping.join_pending_groups) and returns 202.
+    Multitrack: just marks the files as confirmed tracks of one take -- no file is touched."""
+    members = Resource.query.filter_by(group_id=group_id).all()
+    if not members:
+        return jsonify({"error": "unknown group"}), 404
+    group_type = members[0].group_type
+    for r in members:
+        r.group_error = None
+        r.group_status = "joining" if group_type == "split" else "confirmed"
+    db.session.commit()
+    if group_type == "split":
+        from jobs.queue import enqueue
+        enqueue("join-groups", triggered_by="manual")
+    return jsonify(_group_to_dict(group_id, group_type, members)), (202 if group_type == "split" else 200)
+
+
+@bp.post("/groups/<group_id>/dismiss")
+def dismiss_group(group_id):
+    """'These don't belong together.' Reversible: confirming the same group_id later still works."""
+    members = Resource.query.filter_by(group_id=group_id).all()
+    if not members:
+        return jsonify({"error": "unknown group"}), 404
+    for r in members:
+        r.group_status, r.group_error = "dismissed", None
+    db.session.commit()
+    return jsonify(_group_to_dict(group_id, members[0].group_type, members))
+
+
 # --- Maps ---
 
 @bp.get("/map/config")
@@ -753,7 +835,7 @@ def nas_health():
 def _profile_to_dict(p):
     return {"id": p.id, "name": p.name, "patterns": p.patterns, "timezone": p.timezone,
             "clock_offset_seconds": p.clock_offset_seconds, "date_trust": p.date_trust,
-            "priority": p.priority, "active": p.active}
+            "priority": p.priority, "active": p.active, "split_seconds": p.split_seconds}
 
 
 def _validate_profile(data, partial):
@@ -787,6 +869,10 @@ def _validate_profile(data, partial):
         return "priority must be an integer"
     if "active" in data and not isinstance(data["active"], bool):
         return "active must be true or false"
+    if "split_seconds" in data and data["split_seconds"] is not None:
+        v = data["split_seconds"]
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            return "split_seconds must be a positive integer (or null: this recorder doesn't split)"
     return None
 
 
@@ -811,7 +897,7 @@ def create_recorder_profile():
         timezone=data.get("timezone", Config.DEFAULT_RECORDER_TIMEZONE),
         clock_offset_seconds=data.get("clock_offset_seconds", 0),
         date_trust=data.get("date_trust", "suggest"), priority=data.get("priority", 100),
-        active=data.get("active", True),
+        active=data.get("active", True), split_seconds=data.get("split_seconds"),
     )
     db.session.add(p)
     db.session.commit()
@@ -830,7 +916,7 @@ def update_recorder_profile(profile_id):
         if clash:
             return jsonify({"error": "a profile with that name already exists"}), 409
         p.name = data["name"].strip()
-    for field in ("patterns", "timezone", "clock_offset_seconds", "date_trust", "priority", "active"):
+    for field in ("patterns", "timezone", "clock_offset_seconds", "date_trust", "priority", "active", "split_seconds"):
         if field in data:
             setattr(p, field, data[field])
     db.session.commit()

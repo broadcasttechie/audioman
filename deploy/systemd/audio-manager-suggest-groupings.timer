@@ -1,0 +1,14 @@
+# Save as /etc/systemd/system/audio-manager-suggest-groupings.timer
+# Looks for new split-file/multitrack candidates among recordings that don't already have a
+# group_id. Metadata-only and cheap; new recordings are also checked as they're ingested.
+
+[Unit]
+Description=Run audio-manager suggest-groupings every 15 minutes
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

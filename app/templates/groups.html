@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Split &amp; multitrack grouping{% endblock %}
+{% block head %}
+<style>
+  .card { border: 1px solid #8884; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 1rem; }
+  .kind { font-size: 0.75rem; text-transform: uppercase; opacity: 0.6; letter-spacing: 0.03em; }
+  .badge { display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: #8882; margin-left: 0.4rem; }
+  .members { margin: 0.5rem 0; }
+  .member { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.3rem 0; border-bottom: 1px solid #8882; font-size: 0.88rem; }
+  .member:last-child { border-bottom: none; }
+  .member .meta { opacity: 0.7; white-space: nowrap; font-size: 0.8rem; }
+  .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
+  .err { color: #d55; font-size: 0.85rem; }
+  .toprow { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+</style>
+{% endblock %}
+{% block content %}
+<a class="back-link" href="/manage">&larr; Manage</a>
+<h1>Split &amp; multitrack grouping</h1>
+<p class="hint">A recorder that splits a long recording into parts, or several files recorded at once,
+  are offered here for you to confirm. Nothing is ever joined or relabelled without you saying so.</p>
+<div class="toprow">
+  <button type="button" id="scan">Look for new suggestions</button>
+  <button type="button" id="history">Show history</button>
+</div>
+<div id="body" class="status">Loading...</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/app.js"></script>
+<script>
+let showHistory = false;
+let pollTimer = null;
+
+async function load() {
+  const body = document.getElementById('body');
+  try {
+    const groups = await apiJson('GET', '/api/groups' + (showHistory ? '?status=all' : ''));
+    render(groups);
+    clearTimeout(pollTimer);
+    if (groups.some(g => g.status === 'joining')) pollTimer = setTimeout(load, 3000);
+  } catch (e) {
+    body.textContent = 'Error: ' + e.message;
+    body.className = 'status err';
+  }
+}
+
+function memberLine(m) {
+  const meta = (m.captured_at ? formatDate(m.captured_at) + ' · ' : '') +
+              (m.duration_seconds != null ? formatDuration(m.duration_seconds) + ' · ' : '') + m.status;
+  return el('div', { class: 'member' }, [el('span', { class: 'name' }, [m.filename]), el('span', { class: 'meta' }, [meta])]);
+}
+
+async function act(groupId, action) {
+  try {
+    await apiJson('POST', `/api/groups/${groupId}/${action}`);
+  } catch (e) {
+    alert('Could not update this group: ' + e.message);
+  }
+  load();
+}
+
+function actionsFor(g) {
+  if (g.status === 'joining' || g.status === 'joined') return null;
+  const label = g.type === 'split' ? (g.status === 'join-failed' ? 'Try again' : 'Join these into one file')
+                                   : 'These are tracks of one take';
+  return el('div', { class: 'actions' }, [
+    el('button', { type: 'button', onclick: () => act(g.group_id, 'confirm') }, [label]),
+    el('button', { type: 'button', onclick: () => act(g.group_id, 'dismiss') }, ['Not related']),
+  ]);
+}
+
+function groupCard(g) {
+  const kids = [
+    el('div', { class: 'kind' }, [
+      g.type === 'split' ? 'Split recording' : 'Multitrack take',
+      g.status !== 'suggested' ? el('span', { class: 'badge' }, [g.status]) : '',
+    ]),
+    el('p', {}, [g.reason || '']),
+    el('div', { class: 'members' }, g.members.map(memberLine)),
+  ];
+  if (g.status === 'join-failed' && g.error) kids.push(el('p', { class: 'err' }, ['Could not join: ' + g.error]));
+  if (g.status === 'joining') kids.push(el('p', { class: 'hint' }, ['Joining… this can take a while for large files.']));
+  if (g.status === 'joined' && g.joined_into_id) kids.push(el('p', {}, [el('a', { href: '/review/' + g.joined_into_id }, ['Open the joined recording →'])]));
+  const actions = actionsFor(g);
+  if (actions) kids.push(actions);
+  return el('div', { class: 'card' }, kids);
+}
+
+function render(groups) {
+  const body = document.getElementById('body');
+  body.className = ''; body.replaceChildren();
+  if (!groups.length) {
+    body.append(el('p', { class: 'hint' }, [showHistory ? 'No grouping history yet.' : 'Nothing needs a decision right now.']));
+    return;
+  }
+  body.append(el('div', {}, groups.map(groupCard)));
+}
+
+document.getElementById('scan').addEventListener('click', async () => {
+  const btn = document.getElementById('scan');
+  btn.disabled = true;
+  try {
+    await apiJson('POST', '/api/jobs/suggest-groupings/run');
+  } catch (e) { /* enqueue rarely fails; the periodic sweep will still catch it */ }
+  setTimeout(() => { btn.disabled = false; load(); }, 2500);
+});
+document.getElementById('history').addEventListener('click', () => {
+  showHistory = !showHistory;
+  document.getElementById('history').textContent = showHistory ? 'Hide history' : 'Show history';
+  load();
+});
+
+load();
+</script>
+{% endblock %}

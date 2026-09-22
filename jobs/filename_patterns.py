@@ -191,7 +191,7 @@ def _no_date_reason(pattern, groups):
 # afterwards (patterns, timezone, clock offset, trust) via the API. Order = priority.
 DEFAULT_PROFILES = [
     {   # 30-minute splitter; also the recorder whose clock was unset (`audio_000101_...`)
-        "name": "Insta360 mic", "date_trust": "trusted", "priority": 10,
+        "name": "Insta360 mic", "date_trust": "trusted", "priority": 10, "split_seconds": 1800,
         "patterns": [
             "audio_{YY}{MM}{DD}_{hh}{mm}{ss}_{bits}bit_orig_stereo",
             "audio_{YY}{MM}{DD}_{hh}{mm}{ss}_{bits}bit_orig",
