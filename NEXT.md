@@ -361,16 +361,18 @@ checks (`tests/live/`).
 | 4 | [app] API v1 + per-device tokens | not started |
 | 5 | Inbox hardening, batch review, background filing | **done**; [app] upload API v2 not started |
 | 6 | Waveform + listening copy + reclaimable space | **done** ([app] device export API not started) |
-| 8 | Categories as data, Manage, Home, maps | **done** (including the per-recording route map and the all-recordings map); place names not started (needs the geocoder decision) |
+| 8 | Categories as data, Manage, Home, maps, place names | **done** (per-recording route map, all-recordings map, Photon place names, swappable providers) |
 | 9 | Placement + per-file copies + Drive remote | not started (Drive-copy design unresolved) |
 | 10 | Segments UI, then transcription worker | not started |
 
 **Not in the MVP, in the order I would do them:**
 1. **Split-file joining and multitrack/outing grouping** (Insta360 parts are exactly 1800 s with a ~2 s gap; `filename_info`
    already carries what the matcher needs). Suggest-only; a join is a non-destructive ffmpeg concat kept in staging budget.
-2. **Place names.** Needs one decision: the geocoder (public Nominatim with a cache, sending coordinates to OSM, vs self-hosted).
-3. **Package 4 -> 5 (upload v2) -> 6 (device export)** = the backend the Android app needs. The app itself stays plan-only.
-4. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
+2. **Package 4 -> 5 (upload v2) -> 6 (device export)** = the backend the Android app needs. The app itself stays plan-only.
+3. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
+4. **Non-destructive processing** (PLAN §21: gain/normalise, fades, filters, mono/stereo mix, sample-rate and bit-depth
+   conversion incl. 32-bit float, FLAC/MP3/Opus export) as a new step on the editor, building on the clip/export plumbing
+   that already exists.
 5. **Placement/Drive copies** (needs the Drive remote decision: `drive.file` OAuth vs full OAuth vs skip).
 6. Smaller: DAW project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
 
@@ -438,10 +440,11 @@ EXDEV (verified). Fixed together with the guard.
 ## Questions the user can answer offline (each unblocks a package)
 1. ~~Correct the wrong date on the existing resource~~ done by the user; location refreshed. (WP1)
 2. Confirm one `voice` category replacing voice-personal/voice-project. (WP8)
-3. Place-name source: public Nominatim with caching, or self-hosted. (WP8)
+3. ~~Place-name source~~ **done 2026-09-21: self-hosted Photon** (`photon.home.zamia.co.uk`), built and live.
 4. Drive copies: (a) second OAuth remote with `drive.file` scope [recommended],
    (b) full owner OAuth, or (c) skip Drive copies for now. (WP9)
-5. Pause the failing hourly Drive sync timer now? (cheap win)
+5. ~~Pause the failing hourly Drive sync timer now?~~ **done 2026-09-21**: `nas-to-drive-library` timer disabled
+   (it could never succeed — service accounts have no Drive quota).
 6. Where do multitrack files come from / a sample of names when available. (WP2)
 7. OK for filename/mtime dates as *suggestions* confirmed at intake — assumed
    yes from "filenames often have times"; say if not. (WP2)
