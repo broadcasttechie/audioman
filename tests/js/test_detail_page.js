@@ -178,5 +178,22 @@ const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `expected ${b} +/-
     assert.ok(/auto/.test(text(detail)), 'marked as looked up automatically');
   });
 
+  await test('clips are a read-only list here (tap to hear); creating one links to the editor instead', async () => {
+    const clips = [{ id: 'c1', start_seconds: 12.3, end_seconds: 20, label: 'Intro' }];
+    const { dom, detail, settle } = await run({ [`/api/resources/${RID}/clips`]: () => jsonRes(clips) });
+    await settle(60);
+    assert.strictEqual(detail.querySelectorAll('#clip-start').length + detail.querySelectorAll('#clip-end').length + detail.querySelectorAll('.clip-add-row').length, 0,
+      'no manual start/end entry form on this page any more');
+    const editorLinks = detail.querySelectorAll('a').filter(a => a.attributes.href === `/edit/${RID}`);
+    assert.ok(editorLinks.length >= 1, 'at least one link (the clips heading) points at the editor for creating/managing clips');
+    const row = detail.querySelector('.clip-row');
+    assert.ok(row && /0:12.*0:20.*Intro/.test(row.textContent), 'the clip is listed: ' + (row && row.textContent));
+    const audio = dom.document.getElementById('player');
+    assert.strictEqual(audio.paused, true);
+    row.click();
+    near(audio.currentTime, 12.3, 0.01);
+    assert.strictEqual(audio.paused, false, 'tapping a clip plays it from its start');
+  });
+
   console.log(`\n${passed} passed` + (process.exitCode ? ', SOME FAILED' : ''));
 })();
