@@ -24,6 +24,12 @@
   .card-meta { margin-top: 0.3rem; font-size: 0.8rem; opacity: 0.75; }
   .card-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.4rem; }
   .card-tags span { font-size: 0.72rem; padding: 0.05rem 0.5rem; border-radius: 999px; background: #8882; }
+
+  /* Segment search hits (PLAN 18.4): a moment within a recording, not the whole file. */
+  #moments { margin-bottom: 0.9rem; }
+  #moments h2 { font-size: 0.85rem; opacity: 0.75; margin: 0 0 0.5rem; font-weight: 600; }
+  .moment { border-left: 3px solid #8886; }
+  .moment .card-meta i { font-style: normal; opacity: 0.85; }
   .card-fail { margin-top: 0.4rem; font-size: 0.8rem; color: #d55; }
   .empty-state { text-align: center; padding: 2.5rem 1rem; opacity: 0.75; }
   #more { width: 100%; margin: 0.25rem 0 1rem; }
@@ -67,6 +73,7 @@
   <button type="button" class="clear-link" id="clear-filters">Clear filters</button>
 </details>
 
+<div id="moments"></div>
 <div id="results" class="status">Loading...</div>
 <button type="button" id="more" hidden>Load more</button>
 {% endblock %}
@@ -185,6 +192,7 @@ function refresh() {
   writeUrl();
   syncControls();
   load(true);
+  loadMoments();
 }
 
 function addTag() {
@@ -237,6 +245,41 @@ function buildCard(res) {
     a.append(el('div', { class: 'card-fail' }, [why.length > 160 ? why.slice(0, 160) + '…' : why]));
   }
   return a;
+}
+
+// ---- moments (segment search, PLAN 18.4: "the unit of search is a segment, not just the file")
+
+function buildMomentCard(seg) {
+  const r = seg.resource || {};
+  const a = el('a', { class: 'card moment', href: `/edit/${seg.resource_id}?clip=${seg.id}` });
+  a.append(el('div', { class: 'card-top' }, [
+    el('span', { class: 'card-filename' }, [seg.label || r.filename || 'Untitled clip']),
+    el('span', { class: 'card-duration' }, [`${formatDuration(seg.start_seconds)}–${formatDuration(seg.end_seconds)}`]),
+  ]));
+  const bits = [r.filename, r.project, r.session].filter(Boolean);
+  if (seg.speaker) bits.push('spoken by ' + seg.speaker);
+  a.append(el('div', { class: 'card-meta' }, [bits.join(' · ')]));
+  if (seg.transcript) {
+    const snippet = seg.transcript.length > 140 ? seg.transcript.slice(0, 140) + '…' : seg.transcript;
+    a.append(el('div', { class: 'card-meta' }, [el('i', {}, ['“' + snippet + '”'])]));
+  }
+  if (seg.tags && seg.tags.length) a.append(el('div', { class: 'card-tags' }, seg.tags.map(t => el('span', {}, [t]))));
+  return a;
+}
+
+let momentsToken = 0;
+async function loadMoments() {
+  const token = ++momentsToken;
+  const box = $('moments');
+  if (!state.q) { box.replaceChildren(); return; }
+  try {
+    const r = await fetch('/api/segments/search?limit=6&q=' + encodeURIComponent(state.q));
+    const hits = await r.json();
+    if (token !== momentsToken) return;
+    box.replaceChildren();
+    if (!r.ok || !hits.length) return;   // quiet: this is a bonus alongside the file results, not its own error surface
+    box.append(el('h2', {}, [hits.length === 1 ? 'Moment' : 'Moments']), ...hits.map(buildMomentCard));
+  } catch (e) { /* same reasoning: don't let a segment-search hiccup break the main search */ }
 }
 
 async function load(reset) {
@@ -311,6 +354,7 @@ async function init() {
   if (activeFilterCount()) $('filters').open = true;
   syncControls();
   load(true);
+  loadMoments();
 }
 
 function debounce(fn, ms) {

@@ -87,6 +87,12 @@ def library():
     return web_api.list_resources()
 
 
+@device_bp.get("/segments/search")
+@require_device_token
+def segments_search():
+    return web_api.search_segments()
+
+
 @device_bp.get("/resources/<resource_id>")
 @require_device_token
 def resource_detail(resource_id):

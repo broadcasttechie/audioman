@@ -24,6 +24,11 @@
   .clip .meta { font-size: 0.8rem; opacity: 0.7; white-space: nowrap; }
   .clip .acts { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.4rem; }
   .clip .acts button, .clip .acts select, .clip .acts a { padding: 0.2rem 0.6rem; font-size: 0.82rem; }
+  /* Segment metadata (PLAN 18.4): who's speaking, tags from the shared pool, a manual transcript. */
+  .clip-details { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #8882; display: flex; flex-direction: column; gap: 0.4rem; }
+  .clip-details .row input[type=text] { flex: 1; }
+  .clip-details textarea { min-height: 2.4rem; font-family: inherit; font-size: 0.85rem; }
+  .clip-details .chip-row:empty { display: none; }
   #msg { min-height: 1.3rem; font-size: 0.85rem; margin-bottom: 0.4rem; }
   .keys { font-size: 0.78rem; opacity: 0.7; line-height: 1.5; }
   .keys kbd { border: 1px solid #8886; border-radius: 4px; padding: 0 0.3rem; font-size: 0.75rem; }
@@ -47,9 +52,11 @@ const ms = (x) => Math.floor(x * 1000) / 1000;
 
 async function main() {
   const root = document.getElementById('ed');
-  let resource, clips;
+  let resource, clips, allTags;
   try {
-    [resource, clips] = await Promise.all([apiJson('GET', `/api/resources/${resourceId}`), apiJson('GET', `/api/resources/${resourceId}/clips`)]);
+    [resource, clips, allTags] = await Promise.all([
+      apiJson('GET', `/api/resources/${resourceId}`), apiJson('GET', `/api/resources/${resourceId}/clips`), apiJson('GET', '/api/tags'),
+    ]);
   } catch (e) { root.textContent = 'Error: ' + e.message; root.className = 'status err'; return; }
   root.className = ''; root.replaceChildren();
   document.getElementById('title').textContent = resource.filename;
@@ -146,6 +153,9 @@ async function main() {
 
   // ---- clips
   const clipList = el('div');
+  const tagSuggestions = el('datalist', { id: 'clip-tag-suggestions' });
+  const refreshTagSuggestions = () => { tagSuggestions.replaceChildren(); for (const t of allTags) tagSuggestions.append(el('option', { value: t.name })); };
+  refreshTagSuggestions();
   async function refreshClips() {
     clips = await apiJson('GET', `/api/resources/${resourceId}/clips`);
     renderClips(); paint();
@@ -171,6 +181,62 @@ async function main() {
     if (!clips.length) { clipList.append(el('p', { class: 'hint' }, ['No clips yet. Drag on the waveform to select a range, then Save as clip.'])); return; }
     for (const c of clips.slice().sort((a, b) => a.start_seconds - b.start_seconds)) clipList.append(clipRow(c));
   }
+  function tagIdFor(tagName) { const t = allTags.find(t => t.name === tagName); return t ? t.id : null; }
+  async function patchClipTags(c, names) {
+    const ids = names.map(tagIdFor).filter(Boolean);
+    Object.assign(c, await apiJson('PATCH', `/api/clips/${c.id}`, { tags: ids }));
+  }
+
+  // Segment metadata (PLAN 18.4): who's speaking, tags from the shared pool (same one file/project
+  // tags come from), and a manually-typed transcript -- the unit of search is this range, not just
+  // the file, so these are what /api/segments/search matches against.
+  function clipDetails(c) {
+    if (!c.tags) c.tags = [];   // a clip just created client-side before the server round-trip, or an older cached one
+    const speakerIn = el('input', { type: 'text', value: c.speaker || '', placeholder: 'Speaker (optional)' });
+    speakerIn.addEventListener('change', async () => {
+      try { Object.assign(c, await apiJson('PATCH', `/api/clips/${c.id}`, { speaker: speakerIn.value.trim() || null })); say('Saved.'); }
+      catch (e) { say(e.message, true); }
+    });
+
+    const chipRow = el('div', { class: 'chip-row' });
+    const renderChips = () => {
+      chipRow.replaceChildren();
+      for (const tagName of c.tags) {
+        const rm = el('button', { type: 'button', onclick: async () => {
+          try { await patchClipTags(c, c.tags.filter(n => n !== tagName)); renderChips(); say('Saved.'); }
+          catch (e) { say(e.message, true); }
+        } }, ['×']);
+        chipRow.append(el('span', { class: 'chip' }, [tagName, rm]));
+      }
+    };
+    renderChips();
+    const tagIn = el('input', { type: 'text', list: 'clip-tag-suggestions', placeholder: 'Add tag, press Enter' });
+    tagIn.addEventListener('keydown', async (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      const nm = tagIn.value.trim();
+      if (!nm || c.tags.includes(nm)) return;
+      try {
+        const tag = await apiJson('POST', '/api/tags', { name: nm });
+        if (!allTags.some(t => t.id === tag.id)) { allTags.push(tag); refreshTagSuggestions(); }
+        await patchClipTags(c, [...c.tags, tag.name]);
+        tagIn.value = ''; renderChips(); say('Saved.');
+      } catch (e) { say(e.message, true); }
+    });
+
+    const transcriptIn = el('textarea', { placeholder: 'Transcript (optional)' });
+    transcriptIn.value = c.transcript || '';
+    transcriptIn.addEventListener('change', async () => {
+      try { Object.assign(c, await apiJson('PATCH', `/api/clips/${c.id}`, { transcript: transcriptIn.value.trim() || null })); say('Saved.'); }
+      catch (e) { say(e.message, true); }
+    });
+
+    return el('div', { class: 'clip-details' }, [
+      el('div', { class: 'row' }, [el('label', { style: 'margin:0; flex:none' }, ['Speaker']), speakerIn]),
+      chipRow, tagIn, transcriptIn,
+    ]);
+  }
+
   function clipRow(c) {
     const name = el('input', { type: 'text', value: c.label || '', placeholder: 'Label' });
     name.addEventListener('change', async () => { try { Object.assign(c, await apiJson('PATCH', `/api/clips/${c.id}`, { label: name.value.trim() || null })); say('Renamed.'); paint(); } catch (e) { say(e.message, true); } });
@@ -188,6 +254,7 @@ async function main() {
         fmt, exportBtn,
         btn('Delete', async () => { if (!confirm('Delete this clip?')) return; try { await apiJson('DELETE', `/api/clips/${c.id}`); if (selectedClipId === c.id) selectedClipId = null; await refreshClips(); } catch (e) { say(e.message, true); } }),
       ]),
+      clipDetails(c),
     ]);
     return row;
   }
@@ -209,13 +276,26 @@ async function main() {
     } catch (e) { button.disabled = false; button.textContent = 'Export'; say('Export: ' + e.message, true); }
   }
 
-  root.append(el('div', { class: 'box' }, [note, mainCanvas, overCanvas]), transport, msg, panel, el('h2', {}, ['Clips']), clipList,
+  root.append(el('div', { class: 'box' }, [note, mainCanvas, overCanvas]), transport, msg, panel, el('h2', {}, ['Clips']), tagSuggestions, clipList,
     el('p', { class: 'keys' }, [
       el('kbd', {}, ['Space']), ' play/pause · ', el('kbd', {}, ['← →']), ' ±1 s (', el('kbd', {}, ['Shift']), ' 10 s, ', el('kbd', {}, ['Alt']), ' 0.1 s) · ',
       el('kbd', {}, ['I']), ' / ', el('kbd', {}, ['O']), ' set start / end at the playhead · ', el('kbd', {}, ['Enter']), ' play selection · ',
       el('kbd', {}, ['C']), ' save clip · ', el('kbd', {}, ['L']), ' loop · ', el('kbd', {}, ['S']), ' select/move · ', el('kbd', {}, ['+ − 0']), ' zoom · ', el('kbd', {}, ['Esc']), ' clear',
     ]));
   renderClips();
+
+  // "Land on that moment" (PLAN 18.4): a segment-search result links here as ?clip=<id> --
+  // select and play it straight away, same as clicking Select/Play would.
+  const wantClip = new URLSearchParams(location.search).get('clip');
+  if (wantClip) {
+    const target = clips.find(c => c.id === wantClip);
+    if (target) {
+      selectClip(target);
+      playRange(target.start_seconds, target.end_seconds);
+      const row = document.getElementById('clip-' + target.id);
+      if (row && row.scrollIntoView) row.scrollIntoView({ block: 'center' });
+    }
+  }
 
   // ---- keyboard
   document.addEventListener('keydown', (ev) => {

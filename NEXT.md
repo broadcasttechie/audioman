@@ -387,6 +387,34 @@ No migration was needed (the user confirmed only test data exists), so the chang
   effect here, same as a schema change (Flask caches compiled templates; two earlier pushes this
   session looked deployed by their 200 checks but weren't actually live until this restart).
 
+## Built 2026-09-24: manual segment tagging (PLAN 18.4)
+- **A clip carries tags (the same shared pool as files/projects), a transcript and a speaker now**
+  -- `Clip` extended in place rather than renamed to `Segment`, to avoid disturbing the working
+  export/editor code (see PLAN 18.4.1 for why that's still faithful to the original design note).
+  Editable from the full-screen editor's clip panel: speaker field, tag chips (find-or-create,
+  same UI as a recording's own tags), a transcript textarea.
+- **`GET /api/segments/search?q=`**: the unit of search is the segment, not just the file (find
+  Jacob saying a particular phrase). Matches a clip's own label/notes/transcript/speaker/tags and
+  returns enough about its resource to jump straight to the moment. Surfaced in the Library page as
+  a "Moments" section above the file results when you search; opens `/edit/<id>?clip=<id>`, which
+  now selects, plays and scrolls to that exact clip on load.
+- **Fixed along the way:** the tag pool being genuinely shared (files AND clips) exposed that
+  `delete_tag`/`merge_tag`/`list_tags` only ever accounted for file usage, predating clips having
+  tags -- a tag used only by a clip could be deleted with no warning, and merging one would silently
+  drop its clip uses instead of moving them. Fixed, and `manage.html`'s delete/merge confirmations
+  (which had the same file-count-only blind spot) updated to match.
+- Verified: a live run (`tests/live/live_segments.py`) covering the full round trip including all
+  three tag-pool fixes and deleting a tagged clip cleanly, plus 2 new Node tests. Full regression
+  after: 145 unit tests, 16 live suites, 55 Node tests.
+- **Not built:** BWF/iXML export markers for segments (PLAN says this was always open, "format
+  details to design at build time" -- still true); the transcription worker itself (needs a
+  separate Mac/GPU machine this session has no access to); ranked full-text search (today's segment
+  search is the same simple substring match the rest of the app's search uses).
+- **While this was being built, your real Drive Inbox pull picked up 3 real files** (the documented
+  Insta360 split chain from 2026-09-17, `audio_260917_100746/103748/110748`) -- entirely unrelated
+  to this session's work, just the normal timer doing its job. They're sitting in Review, and the
+  split-join sweeper already flagged them as a suggestion at `/groups`.
+
 ## Fixed 2026-09-21 (found by a regression run and by looking at Home)
 - **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
 - **Stranded queue rows:** a worker restarted mid-job left its row `running`, which blocked new runs of that job for
@@ -429,15 +457,18 @@ checks (`tests/live/`).
 | 6 | Waveform + listening copy + reclaimable space | **done** ([app] device export API **done**: browse/playback/export delegated under device auth) |
 | 8 | Categories as data, Manage, Home, maps, place names | **done** (per-recording route map, all-recordings map, Photon place names, swappable providers) |
 | 9 | Placement + per-file copies + Drive remote | not started (Drive-copy design unresolved) |
-| 10 | Segments UI, then transcription worker | not started |
+| 10 | Segments UI, then transcription worker | **manual tagging done** (tags/transcript/speaker on a clip, segment search, deep links); transcription worker not started (needs a separate Mac/GPU machine) |
 
 **Not in the MVP, in the order I would do them:**
-1. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
+1. **The Mac/GPU transcription worker** (PLAN §18.5) -- needs a decision on which machine, and
+   access to it (this session only has the Proxmox container). Manual segment tagging, which was
+   the prerequisite, is done (below).
 2. **Non-destructive processing** (PLAN §21: gain/normalise, fades, filters, mono/stereo mix, sample-rate and bit-depth
    conversion incl. 32-bit float, FLAC/MP3/Opus export) as a new step on the editor, building on the clip/export plumbing
    that already exists.
 3. **Placement/Drive copies** (needs the Drive remote decision: `drive.file` OAuth vs full OAuth vs skip).
-4. Smaller: DAW project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
+4. Smaller: BWF/iXML export markers for segments (PLAN 18.4, still genuinely undesigned), DAW
+   project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
 
 ~~Split-file joining and multitrack/outing grouping~~ **done 2026-09-22**, see the "Built" section above and PLAN §22.
 ~~Package 4 -> 5 (upload v2) -> 6 (device export): the Android app's backend~~ **done 2026-09-24**, see the "Built"

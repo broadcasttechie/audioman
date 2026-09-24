@@ -979,7 +979,7 @@ carry before adding columns; the manage page (§17.2) edits project notes.
   session or file that has location data**, not tied to one category. A
   category may still set a *default* (e.g. field recordings open on the map).
 
-### 18.4 Voice recordings: section-level tagging (SFX-library style)
+### 18.4 Voice recordings: section-level tagging (SFX-library style) — manual tagging built 2026-09-24
 
 Voice material is organised like an SFX library: the unit of search is a
 **segment** — a time range within a file — not just the file. Example:
@@ -991,9 +991,44 @@ find Jacob saying a particular phrase and land on that moment.
   transcript text, optional speaker. The existing `Clip` becomes one use of a
   segment (a segment can be exported; not every segment is).
 - **Agreed — segments export as WAV markers/regions** (BWF/iXML-style) so
-  they appear in a DAW. Format details to design at build time.
+  they appear in a DAW. Format details to design at build time. **Still not
+  built** -- genuinely open, as noted here from the start; see 18.4.1.
 - Manual segment tagging works with no ML and ships first; transcription
   (§18.5) pre-populates segments rather than replacing manual ones.
+
+#### 18.4.1 Built: manual segment tagging (no ML; transcription itself is still §18.5, unbuilt)
+
+- **`Clip` extended, not renamed** (`app/models.py`): tags (a new `clip_tags` join table against
+  the SAME `Tag` model resources already use -- literally one pool, not a parallel one), plus
+  `transcript` and `speaker` columns. Kept the class/table name `Clip` rather than renaming to
+  `Segment` to avoid disturbing the already-working export/editor code; this is what "the existing
+  Clip becomes one use of a segment" meant in practice.
+- **Editing**: the full-screen editor's clip panel (`app/templates/edit.html`) gained a details row
+  per clip -- speaker (free text), tags (chips from the shared pool, find-or-create by name, same
+  UI pattern as a recording's own tags), transcript (a textarea). `PATCH /api/clips/<id>` and
+  `POST /api/resources/<id>/clips` both take `tags`/`transcript`/`speaker` now.
+- **Search**: `GET /api/segments/search?q=` matches a clip's own label/notes/transcript/speaker/tags
+  (not the parent recording's fields -- the existing `/resources` search already covers those) and
+  returns each hit with its resource's id/filename/project/session, enough to link straight to the
+  moment. Surfaced in the Library page as a "Moments" section above the file results when you
+  search; each links to `/edit/<resource_id>?clip=<id>`, which the editor now reads on load to
+  select, play and scroll to that exact clip -- "land on that moment", literally.
+- **The tag pool being genuinely shared surfaced three real gaps in the existing tag endpoints**,
+  all predating clips having tags, all fixed as part of this: `list_tags` now reports `clip_count`
+  alongside `file_count`; `delete_tag` now refuses (needs `?force=1`) when a tag is used by a clip,
+  not only when used by a file; `merge_tag` now moves a tag's clip uses to the target too, instead
+  of silently dropping them. `manage.html`'s tag delete/merge confirmations updated to match (they
+  only looked at `file_count` before, which would have under-warned and then 409'd).
+- Verified: a live run (`tests/live/live_segments.py`) covering the full round trip (create with
+  tags/transcript/speaker, update, search by each field including tags, the deep link, and all
+  three tag-pool fixes: `clip_count` reporting, delete refusing on clip-only usage, merge moving a
+  clip's tag to the target) plus deleting a tagged clip cleanly (the tag-pool join row is cleaned
+  up automatically). 2 new Node tests (editing a segment's metadata; landing on a moment via
+  `?clip=`). Full regression after: 145 unit tests, 16 live suites, 55 Node tests.
+- **Not built:** BWF/iXML export markers (still open, per above); transcription itself and speaker
+  diarisation (§18.5 -- needs the separate Mac/GPU worker, which this session has no access to set
+  up); proper full-text/trigram search (segment search today is the same simple case-insensitive
+  substring match the rest of this app's search uses, not ranked FTS).
 
 ### 18.5 Transcription and speaker identification (local only)
 

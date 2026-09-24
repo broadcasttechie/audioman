@@ -36,6 +36,10 @@ ADD_COLUMNS = [
     ("resources", "joined_into_id", "VARCHAR REFERENCES resources(id)"),
     ("resources", "joined_from_ids", "JSON"),
     ("recorder_profiles", "split_seconds", "INTEGER"),
+    # Segments (PLAN 18.4): a Clip carries tags (clip_tags, a new table -- db.create_all() makes
+    # it, nothing needed here), an optional transcript and an optional speaker.
+    ("clips", "transcript", "TEXT"),
+    ("clips", "speaker", "VARCHAR"),
 ]
 
 

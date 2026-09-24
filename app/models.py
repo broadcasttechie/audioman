@@ -239,12 +239,26 @@ class TrackPoint(db.Model):
     lon = db.Column(db.Float, nullable=False)
 
 
+clip_tags = db.Table(
+    "clip_tags",
+    db.Column("clip_id", db.String, db.ForeignKey("clips.id"), primary_key=True),
+    db.Column("tag_id", db.String, db.ForeignKey("tags.id"), primary_key=True),
+)
+
+
 class Clip(db.Model):
     """
-    A sub-clip marker against a resource — start/end offsets in
-    seconds, metadata only. Export state lives entirely in the Export
-    table (a clip can be exported more than once, in different
-    formats), not here.
+    A time range within a resource -- PLAN 18.4's "segment": the unit of
+    search for voice material is a range, not just the file (find Jacob
+    saying a particular phrase and land on that moment). A plain export-only
+    marker (the original use) is just a segment with no tags/transcript/
+    speaker set; export state lives entirely in the Export table (a clip can
+    be exported more than once, in different formats), not here.
+
+    Kept as the `Clip` class/table (not renamed to `Segment`) to avoid
+    disturbing the working export/editor code that already depends on it --
+    PLAN 18.4 calls this "the existing Clip becomes one use of a segment",
+    which this satisfies by extension rather than a rename.
     """
     __tablename__ = "clips"
 
@@ -256,6 +270,13 @@ class Clip(db.Model):
     end_seconds = db.Column(db.Float, nullable=False)
     label = db.Column(db.String)
     notes = db.Column(db.Text)
+    # Tags come from the SAME pool as file/project tags (PLAN 18.4: "one tag pool"), including a
+    # person's name where the speaker is identified by tag rather than (or as well as) `speaker`.
+    tags = db.relationship("Tag", secondary=clip_tags, backref="clips")
+    # Manually typed for now (transcription is a separate, not-yet-built worker, PLAN 18.5); a
+    # future ML pass suggests values here rather than overwriting anything already set.
+    transcript = db.Column(db.Text, nullable=True)
+    speaker = db.Column(db.String, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
