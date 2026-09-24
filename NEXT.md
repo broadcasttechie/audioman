@@ -19,6 +19,18 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
 the repo has real local IPs/hostnames in PLAN.md/DEPLOYMENT.md, flip it
 private on GitHub if that wasn't intended.
 
+## Known issue (reported 2026-09-24, not yet investigated)
+- **Map doesn't line up with the audio.** User's words: "i can't seem to get the map to
+  line up with the audio." This is the per-recording Location section's route/marker sync
+  (`app/static/map.js` + `resource_detail.html`): the marker is supposed to follow the audio
+  along the GPS route, interpolated between fixes by time, and clicking the route seeks the
+  audio to that moment. **Explicitly deferred at the user's request — do not investigate until
+  asked.** One unconfirmed thing worth checking first when this is picked up: the captured-at
+  edit field on this same page only stored/edited **minute** precision until today's fix (see
+  the "captured time needs seconds" entry below) — if the sync math anchors on captured_at,
+  a truncated start time would throw the whole route off by up to 59s. Not verified, just the
+  first thing to rule out.
+
 ## Decisions (all stated or agreed by the user)
 - **Model:** Project → Session → File. A session is one night (shows) or one
   outing (field); loose recordings hide the scaffolding. **No project nesting.**
@@ -414,6 +426,17 @@ No migration was needed (the user confirmed only test data exists), so the chang
   Insta360 split chain from 2026-09-17, `audio_260917_100746/103748/110748`) -- entirely unrelated
   to this session's work, just the normal timer doing its job. They're sitting in Review, and the
   split-join sweeper already flagged them as a suggestion at `/groups`.
+
+## Fixed 2026-09-24: captured-time editing/display was truncating seconds
+User report: "the captured time needs seconds." The recording page's "Captured at" field
+(`resource_detail.html`) was a `datetime-local` input with no `step`, so the browser only showed/
+accepted hour:minute -- editing it (even just nudging the precision dropdown) round-tripped
+through a value with no seconds, silently zeroing any that were actually stored (some sources do
+carry them: GPS, filenames with a seconds group). Fixed: `step: '1'` on the input plus seconds in
+the value string; also added seconds to the two other places a clock time (not just a date) is
+already shown -- the suggested-date hint on the same page, and the review queue's card subtitle.
+Deployed and verified live (grepped the served page for the new format strings post-restart, not
+just a 200). See the note above about a possible link to the map-sync issue.
 
 ## Fixed 2026-09-21 (found by a regression run and by looking at Home)
 - **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
