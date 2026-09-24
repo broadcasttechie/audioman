@@ -1,0 +1,8 @@
+# Save as /etc/systemd/system/audio-manager-cleanup-device-uploads.service
+[Unit]
+Description=Audio Manager job: cleanup-device-uploads
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -sf -X POST "http://127.0.0.1:5000/api/jobs/cleanup-device-uploads/run?triggered_by=scheduled"

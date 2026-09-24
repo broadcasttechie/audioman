@@ -103,6 +103,30 @@ const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `expected ${b} +/-
     assert.ok(/could not be loaded: boom/.test(text(detail)), text(detail).slice(0, 300));
   });
 
+  await test('the waveform gets a scrollbar once zoomed in, and dragging it pans the main view', async () => {
+    const { detail, settle } = await run({ [`/api/resources/${RID}/waveform`]: () => ok200(makeDat()) });
+    await settle(120);
+    const scrollbar = detail.querySelector('.wf-scrollbar');
+    const label = detail.querySelector('.wf-time');
+    assert.ok(scrollbar, 'the scrollbar canvas is on the page');
+    assert.ok(!scrollbar.classList.contains('shown'), 'hidden while showing the whole recording: ' + scrollbar.className);
+
+    const zoomIn = detail.querySelectorAll('button').find(b => b.getAttribute('aria-label') === 'Zoom in');
+    assert.ok(zoomIn, 'a zoom-in button exists');
+    zoomIn.click();
+    assert.ok(scrollbar.classList.contains('shown'), 'the scrollbar appears once zoomed in');
+    assert.ok(/· 0:15–0:45/.test(label.textContent), 'zoomed to the middle 30s of a 60s recording: ' + label.textContent);
+
+    // Click near the right-hand edge of the scrollbar (the whole recording, 0-60s across its width) --
+    // the main view should jump towards the end, clamped so it never runs past the recording.
+    scrollbar.dispatch('pointerdown', { pointerId: 1, clientX: 550, clientY: 14 });
+    assert.ok(/· 0:30–1:00/.test(label.textContent), 'panned near the end, clamped at the recording\'s length: ' + label.textContent);
+
+    const fit = detail.querySelectorAll('button').find(b => /^Fit$/.test(b.textContent));
+    fit.click();
+    assert.ok(!scrollbar.classList.contains('shown'), 'Fit shows the whole recording again, so the scrollbar hides');
+  });
+
   await test('the bottom player is a custom bar: play button, times, a waveform scrubber, and a link to the editor', async () => {
     const { dom, settle } = await run({ [`/api/resources/${RID}/waveform`]: () => ok200(makeDat()) });
     await settle(150);

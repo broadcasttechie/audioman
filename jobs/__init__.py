@@ -15,6 +15,7 @@ from .filing import file_resources
 from .previews import generate_previews
 from .geocode import geocode_locations
 from .grouping import suggest_groupings, join_pending_groups
+from .device_uploads import cleanup_stale_uploads
 
 JOB_REGISTRY.update({
     "drive-inbox-pull": drive_inbox_pull,
@@ -32,4 +33,5 @@ JOB_REGISTRY.update({
     "geocode-locations": geocode_locations,
     "suggest-groupings": suggest_groupings,
     "join-groups": join_pending_groups,
+    "cleanup-device-uploads": cleanup_stale_uploads,
 })

@@ -52,6 +52,10 @@
   .wf-wrap { border: 1px solid #8884; border-radius: 8px; padding: 0.4rem 0.5rem 0.5rem; }
   /* touch-action pan-y: a vertical swipe still scrolls the page, horizontal drags pan the waveform */
   .wf-canvas { width: 100%; height: 110px; display: block; touch-action: pan-y; cursor: pointer; color: CanvasText; }
+  /* A scrollbar for when the waveform is zoomed in: the whole recording, with the visible window
+     outlined -- drag it (or tap a spot) to jump the main view there. Hidden until you actually zoom. */
+  .wf-scrollbar { display: none; width: 100%; height: 28px; margin-top: 0.3rem; cursor: pointer; color: CanvasText; touch-action: none; }
+  .wf-scrollbar.shown { display: block; }
   .wf-bar { display: flex; gap: 0.4rem; align-items: center; margin-top: 0.4rem; font-size: 0.8rem; flex-wrap: wrap; }
   .wf-bar button { padding: 0.15rem 0.7rem; }
   .wf-time { margin-left: auto; font-variant-numeric: tabular-nums; opacity: 0.8; }
@@ -827,11 +831,12 @@ function buildWaveformSection(resource) {
 
 function mountWaveform(wrap, wf) {
   const canvas = el('canvas', { class: 'wf-canvas' });
+  const scrollbar = el('canvas', { class: 'wf-scrollbar' });
   const zoomOut = el('button', { type: 'button', 'aria-label': 'Zoom out' }, ['−']);
   const zoomIn = el('button', { type: 'button', 'aria-label': 'Zoom in' }, ['+']);
   const fit = el('button', { type: 'button' }, ['Fit']);
   const label = el('span', { class: 'wf-time' }, ['']);
-  wrap.append(canvas, el('div', { class: 'wf-bar' }, [zoomOut, zoomIn, fit, label]));
+  wrap.append(canvas, scrollbar, el('div', { class: 'wf-bar' }, [zoomOut, zoomIn, fit, label]));
 
   const audio = () => document.getElementById('player');
   const view = new AudioWave.WaveView(canvas, {
@@ -840,10 +845,16 @@ function mountWaveform(wrap, wf) {
     onSeek: (t) => { const a = audio(); if (a) a.currentTime = t; },          // tapping the waveform only seeks
     onDraw: (v) => {
       const now = audio() ? audio().currentTime : 0;
+      const zoomed = v.span < v.duration - 0.01;
       label.textContent = `${AudioWave.fmtClock(now)} / ${AudioWave.fmtClock(v.duration)}` +
-        (v.span < v.duration - 0.01 ? `  · ${AudioWave.fmtClock(v.start)}–${AudioWave.fmtClock(v.start + v.span)}` : '');
+        (zoomed ? `  · ${AudioWave.fmtClock(v.start)}–${AudioWave.fmtClock(v.start + v.span)}` : '');
+      scrollbar.classList.toggle('shown', zoomed);   // only takes up room once there's somewhere to scroll to
+      overview.draw();
     },
   });
+  // The scrollbar: the whole recording with the current zoomed-in window outlined, same component the
+  // full-screen editor uses for its overview strip. Drag or tap it to jump the main view there.
+  const overview = new AudioWave.WaveView(scrollbar, { wf, duration: view.duration, overviewOf: view, getTime: view.getTime });
   zoomIn.addEventListener('click', () => view.zoomBy(2));
   zoomOut.addEventListener('click', () => view.zoomBy(0.5));
   fit.addEventListener('click', () => view.fit());

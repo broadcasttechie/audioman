@@ -141,7 +141,22 @@ class Config:
     # it's the one endpoint that gets its own shared-secret gate rather
     # than relying on network trust. Set a long random value in
     # production; empty disables the endpoint entirely (fails closed).
+    # Superseded for the Android app by per-device tokens (below) — kept for quick manual testing.
     UPLOAD_API_KEY = os.environ.get("UPLOAD_API_KEY", "")
+
+    # --- Android app backend: per-device tokens + chunked/resumable upload (PLAN 19.3) ---
+    DEVICE_UPLOAD_DIR = os.environ.get("DEVICE_UPLOAD_DIR", os.path.join(
+        os.environ.get("STAGING_DIR", "/var/lib/audio-manager/staging"), "device-uploads"))
+    # A chunk this big or bigger is refused (413) -- bounds one request's memory/time regardless of
+    # the whole file's size, which is what makes the protocol work for a 690 MB Insta360 part without
+    # nginx/Flask needing a huge MAX_CONTENT_LENGTH (PLAN's other open item on this).
+    DEVICE_UPLOAD_CHUNK_MAX_BYTES = int(os.environ.get("DEVICE_UPLOAD_CHUNK_MAX_BYTES", 24 * 1024 * 1024))
+    # An 'uploading' session with no chunk activity for this long is presumed abandoned (app closed,
+    # phone died) and is failed + its partial file removed, so it doesn't sit in the staging budget
+    # forever. A finished (completed/failed) session's row is kept a while for support/debugging, then
+    # dropped -- its Resource (if any) is never touched by this.
+    DEVICE_UPLOAD_ABANDONED_HOURS = int(os.environ.get("DEVICE_UPLOAD_ABANDONED_HOURS", 48))
+    DEVICE_UPLOAD_SESSION_RETENTION_DAYS = int(os.environ.get("DEVICE_UPLOAD_SESSION_RETENTION_DAYS", 14))
 
     # --- Immich integration (companion photos) ---
     IMMICH_API_URL = os.environ.get("IMMICH_API_URL", "")

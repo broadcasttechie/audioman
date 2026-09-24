@@ -13,6 +13,9 @@ def create_app(config_class=Config):
     from .api import bp as api_bp
     app.register_blueprint(api_bp, url_prefix="/api")
 
+    from .device_api import device_bp
+    app.register_blueprint(device_bp, url_prefix="/api/device/v1")
+
     from .views import ui_bp
     app.register_blueprint(ui_bp)
 

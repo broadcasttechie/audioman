@@ -1339,6 +1339,61 @@ def upload_audio():
     return jsonify(_resource_to_dict(resource)), 201
 
 
+# --- Devices (Android app auth, PLAN 19/22 backend): management from the Settings page, over
+# the normal VPN-trust /api/* auth. The device-facing endpoints these tokens unlock live under
+# /api/device/v1/ (app/device_api.py), gated by app/device_auth.py instead. ---
+
+def _device_to_dict(d):
+    return {"id": d.id, "label": d.label, "created_at": to_utc_iso(d.created_at),
+            "last_used_at": to_utc_iso(d.last_used_at), "revoked": d.revoked_at is not None,
+            "revoked_at": to_utc_iso(d.revoked_at)}
+
+
+@bp.get("/devices")
+def list_devices():
+    from .models import DeviceToken
+    return jsonify([_device_to_dict(d) for d in DeviceToken.query.order_by(DeviceToken.created_at.desc()).all()])
+
+
+@bp.post("/devices")
+def create_device():
+    """The raw token is only ever in THIS response -- shown once, never stored, never
+    recoverable. Losing it means issuing a new one and revoking the old."""
+    from .models import DeviceToken
+    from .device_auth import generate_token
+    data = request.get_json() or {}
+    label = data.get("label")
+    if not isinstance(label, str) or not label.strip():
+        return jsonify({"error": "label is required (e.g. \"Kristan's phone\")"}), 400
+    raw, token_hash = generate_token()
+    device = DeviceToken(label=label.strip(), token_hash=token_hash)
+    db.session.add(device)
+    db.session.commit()
+    body = _device_to_dict(device)
+    body["token"] = raw
+    return jsonify(body), 201
+
+
+@bp.post("/devices/<device_id>/revoke")
+def revoke_device(device_id):
+    from .models import DeviceToken
+    device = DeviceToken.query.get_or_404(device_id)
+    device.revoked_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify(_device_to_dict(device))
+
+
+@bp.post("/devices/<device_id>/unrevoke")
+def unrevoke_device(device_id):
+    """Reversible on purpose (same "never a dead end" shape as dismiss/confirm on a grouping
+    suggestion): revoking by mistake shouldn't mean re-pairing the phone from scratch."""
+    from .models import DeviceToken
+    device = DeviceToken.query.get_or_404(device_id)
+    device.revoked_at = None
+    db.session.commit()
+    return jsonify(_device_to_dict(device))
+
+
 # --- Projects / Tags (simple CRUD) ---
 
 PLACEMENTS = ("nas", "drive", "both")

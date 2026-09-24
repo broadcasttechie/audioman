@@ -1483,23 +1483,29 @@ and each piece also benefits the web UI.**
   while streaming it; never mark done until the server returns a matching
   checksum.
 
-### 19.3 What the server would need (only when asked)
-The upload endpoint exists (`POST /api/ingest/upload`, `X-Upload-Key`, runs
-the shared ingest synchronously) but is not sized for this. Gaps, all listed
-so nothing is forgotten, none scheduled:
-- **Large files:** 30-minute Insta360 parts are ~690 MB. Needs a
-  chunked/resumable upload, Flask `MAX_CONTENT_LENGTH` and nginx
-  `client_max_body_size`/timeouts set.
-- **Disk admission:** uploads bypass the Inbox disk-budget queue
-  (`jobs/disk_budget.py`), so they must be refused with a "try later"
-  response when staging is full.
-- **Idempotent + confirmable:** dedupe by sha256 already exists; needs a
-  "have you got this checksum?" query so the app can skip and confirm.
-- **Metadata block** with the upload (recorder profile, project/session,
-  source path, title, notes); confirmed-date fields only if the app truly
-  knows the capture time.
-- **Auth:** shared key is enough on the VPN; per-device tokens if external
-  access is ever revisited (§16).
+### 19.3 What the server would need (only when asked) — built 2026-09-24, see §19.6
+The original `POST /api/ingest/upload` (`X-Upload-Key`, runs the shared ingest synchronously)
+was not sized for this and is kept only for quick manual testing. Gaps as originally listed, each
+now resolved:
+- ~~**Large files:** 30-minute Insta360 parts are ~690 MB. Needs a chunked/resumable upload,
+  Flask `MAX_CONTENT_LENGTH` and nginx `client_max_body_size`/timeouts set.~~ Chunked/resumable
+  upload built (§19.6); each chunk is bounded by `DEVICE_UPLOAD_CHUNK_MAX_BYTES` regardless of the
+  whole file's size, so this doesn't need a large `MAX_CONTENT_LENGTH`/`client_max_body_size`
+  after all — that pair is still unset (NEXT.md "Not decided/parked"), but is now only a question
+  for whoever still wants the old single-shot endpoint to take a huge file directly.
+- ~~**Disk admission:** uploads bypass the Inbox disk-budget queue, so they must be refused with
+  a "try later" response when staging is full.~~ Built: `POST /uploads` runs the same
+  `jobs/disk_budget.admit()` check as the Inbox pull before accepting.
+- ~~**Idempotent + confirmable:** dedupe by sha256 already exists; needs a "have you got this
+  checksum?" query so the app can skip and confirm.~~ Built: `POST /checksums/query`, and
+  `POST /uploads` itself short-circuits as a duplicate for a checksum that already exists.
+- ~~**Metadata block** with the upload (recorder profile, project/session, source path, title,
+  notes); confirmed-date fields only if the app truly knows the capture time.~~ Built, per §19.5's
+  fuller spec below (project/session/category/tags/title/notes/source path/a capture-time
+  override that defaults to *approximate* unless the app explicitly says *exact*).
+- ~~**Auth:** shared key is enough on the VPN; per-device tokens if external access is ever
+  revisited.~~ Built anyway, ahead of that need actually arising: `DeviceToken` per device,
+  managed from Settings, gates every `/api/device/v1/...` route.
 
 ### 19.4 Later, plan-only options
 Recording in the app (exact time and timezone stamped at the source, optional
@@ -1566,6 +1572,63 @@ explicitly asked.**
   second client (the shared key is thin for browse/download).
 - The parked **private flag** (§18.5e) matters more once a phone can download:
   decide it before the app exposes downloads.
+
+### 19.6 Backend built (2026-09-24) — the app itself is still plan-only
+
+Answers §19.3/§19.5's gap lists with real code, at the user's instruction ("keep going to get the
+Android backend"). The app itself remains unbuilt, per §19.1's standing instruction.
+
+- **Per-device tokens** (`app/device_auth.py`, `DeviceToken`): a long random token, shown once at
+  creation on the Settings page ("Android app devices"), only its sha256 ever stored. Revoke/
+  unrevoke are both reversible (unrevoking brings the *same* token back, so a mistaken revoke
+  doesn't mean re-pairing the phone). Gates every route under `/api/device/v1/...`
+  (`app/device_api.py`) via `X-Device-Token`; the web UI manages devices over the ordinary
+  `/api/*` VPN trust (`GET/POST /api/devices`, `.../revoke`, `.../unrevoke`).
+- **Chunked/resumable upload** (`POST /uploads` -> `PUT /uploads/<id>/chunk?offset=N` (must start
+  exactly at `bytes_received`, a 409 names the right offset to resume from) -> `GET /uploads/<id>`
+  for status after a reconnect -> `POST /uploads/<id>/complete`, which verifies the assembled
+  file's real sha256 against what was declared before ingesting anything). Each chunk is capped at
+  `DEVICE_UPLOAD_CHUNK_MAX_BYTES` (24 MB default) regardless of the whole file's size — this is
+  what makes a 690 MB Insta360 part practical without a large Flask/nginx body-size limit. Runs the
+  same disk-budget admission as the Inbox pull before accepting a new upload. Sequential per file,
+  not parallel chunks of one file (still true "resumable", just not concurrent) — a possible later
+  refinement, not built.
+- **Idempotent + confirmable:** `POST /checksums/query` (bulk "have you got this?"), and `POST
+  /uploads` itself returns `{"status":"duplicate","resource_id":...}` immediately for a checksum
+  that already exists, with nothing uploaded. `POST /uploads` also takes an optional client id for
+  idempotent *initiate* retries, same shape as project/session creation.
+- **Metadata block, applied at ingest** (`jobs/device_uploads.py`, NOT `jobs.ingest.
+  ingest_staged_file` — that function is built to guess from a bare filename with no other
+  context; a device upload always arrives with real context already collected by the app):
+  project/session (existing ids, validated for the "a file's project is its session's project"
+  rule), category, tags (names, found-or-created, case-insensitive), title+notes (combined; there
+  is still no separate title column), a source path (doubles as the folder-hint
+  `drive_inbox_path` already used for context-free filenames like `STE-000`), and an optional
+  capture-time override that lands as **approximate** unless the app explicitly says *exact* (per
+  §19.5, never a confirmed exact time from a batch guess). Without an override, falls back to the
+  same trusted-filename/embedded-metadata resolution as every other ingest path. Still lands in
+  `pending-review` like everything else — nothing is auto-filed.
+- **Browse, playback, export/download:** thin delegating routes under `/api/device/v1/...`
+  (`/library`, `/resources/<id>`, `/projects`, `/sessions`, `/tags`, `/categories`,
+  `/resources/<id>/{waveform,preview,audio}`, `/resources/<id>/export`, `/exports/<id>`,
+  `/exports/<id>/download`) call straight into the existing `app/api.py` view functions — one
+  behaviour, two doors, no reimplementation. This also means the "proxy" §19.5 asked for turned
+  out to already exist: the AAC listening copy built for the web player (§18.5i) *is* that proxy,
+  now reachable under device auth too.
+- **Cleanup sweeper** (`cleanup-device-uploads`, hourly): fails an `uploading` session with no
+  chunk activity for `DEVICE_UPLOAD_ABANDONED_HOURS` (48h default) and removes its partial file;
+  drops old finished session rows after `DEVICE_UPLOAD_SESSION_RETENTION_DAYS` (the Resource a
+  completed one made is never touched).
+- Verified: 9 new unit tests (token hashing, the upload-filename traversal guard) and a live run
+  (`tests/live/live_device_api.py`, real DB/NAS/worker) covering the whole chunked protocol
+  including a deliberate wrong-offset resume, a checksum-mismatch refusal, an oversized-chunk
+  refusal, disk-admission refusal (and that a partially-resolved metadata block's new tag is
+  correctly rolled back, not left behind), every metadata validation error, delegated
+  browse/waveform/export/download under device auth (and refused without it), device revoke/
+  unrevoke, and the abandoned-session sweeper. Full regression after: 145 unit tests, 16 live
+  suites, 51 Node tests.
+- **Not built:** the app itself (§19.1); parallel chunk upload; a dedicated `title` column
+  (folded into `notes` for now); the private flag.
 
 ## 20. Swappable services (providers)
 

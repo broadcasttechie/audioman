@@ -1,0 +1,14 @@
+# Save as /etc/systemd/system/audio-manager-cleanup-device-uploads.timer
+# Fails any upload session abandoned for DEVICE_UPLOAD_ABANDONED_HOURS (removing its partial
+# file) and drops old finished session rows. Hourly is plenty given the 48h default threshold.
+
+[Unit]
+Description=Run audio-manager cleanup-device-uploads hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=60min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

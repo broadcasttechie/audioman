@@ -46,7 +46,7 @@
 
 <section>
   <h2>Direct upload key <span id="upload-badge" class="badge"></span></h2>
-  <p class="hint">Shared secret for <code>POST /api/ingest/upload</code> (e.g. a future phone app). Sent as the <code>X-Upload-Key</code> header.</p>
+  <p class="hint">Shared secret for <code>POST /api/ingest/upload</code> (quick manual testing). Sent as the <code>X-Upload-Key</code> header. The Android app uses its own per-device token below instead.</p>
   <div class="row">
     <input type="password" id="upload_key" placeholder="(unchanged)">
     <button type="button" onclick="generateUploadKey()">Generate</button>
@@ -55,6 +55,18 @@
 
 <button class="save" onclick="saveSettings()">Save</button>
 <div id="save-status" class="status"></div>
+
+<section>
+  <h2>Android app devices</h2>
+  <p class="hint">Each phone gets its own token for <code>/api/device/v1/...</code> (upload, browse, playback, export), sent as the
+    <code>X-Device-Token</code> header. Shown once when a device is added — if it's lost, revoke the device and add it again.</p>
+  <div id="device-list" class="status">Loading...</div>
+  <div class="row" style="margin-top:0.6rem">
+    <input type="text" id="device-label" placeholder="e.g. Kristan's phone">
+    <button type="button" onclick="addDevice()">Add a device</button>
+  </div>
+  <div id="device-token-box" style="display:none; margin-top:0.6rem;"></div>
+</section>
 
 <section>
   <h2>Drive space</h2>
@@ -376,7 +388,79 @@ async function connectDrive() {
   }
 }
 
+async function loadDevices() {
+  const listEl = document.getElementById('device-list');
+  listEl.textContent = 'Loading...'; listEl.className = 'status';
+  try {
+    const r = await fetch('/api/devices');
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    listEl.className = ''; listEl.innerHTML = '';
+    if (data.length === 0) { listEl.innerHTML = '<div class="folder-row">No devices yet.</div>'; return; }
+    for (const d of data) {
+      const row = document.createElement('div');
+      row.className = 'folder-row';
+      const info = document.createElement('span');
+      const name = document.createElement('div');
+      name.textContent = d.label;
+      const meta = document.createElement('div');
+      meta.style.fontSize = '0.75rem'; meta.style.opacity = '0.7';
+      meta.textContent = (d.revoked ? 'Revoked' : 'Active') +
+        (d.last_used_at ? ' · last used ' + new Date(d.last_used_at).toLocaleDateString() : ' · never used');
+      info.append(name, meta);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = d.revoked ? 'Unrevoke' : 'Revoke';
+      btn.onclick = () => (d.revoked ? unrevokeDevice(d.id) : revokeDevice(d.id));
+      row.append(info, btn);
+      listEl.append(row);
+    }
+  } catch (e) {
+    listEl.textContent = 'Error: ' + e.message;
+    listEl.className = 'status err';
+  }
+}
+
+async function addDevice() {
+  const input = document.getElementById('device-label');
+  const label = input.value.trim();
+  if (!label) return alert('Name the device first, e.g. "Kristan\'s phone".');
+  try {
+    const r = await fetch('/api/devices', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    input.value = '';
+    const box = document.getElementById('device-token-box');
+    box.style.display = '';
+    box.innerHTML = '';
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = 'Token for "' + data.label + '" — enter it in the app now. It will not be shown again:';
+    const code = document.createElement('input');
+    code.type = 'text'; code.readOnly = true; code.value = data.token; code.style.fontFamily = 'monospace';
+    code.onclick = () => code.select();
+    box.append(p, code);
+    loadDevices();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function revokeDevice(id) {
+  if (!confirm('Revoke this device? It will stop being able to upload or sync until you add it again.')) return;
+  await fetch('/api/devices/' + id + '/revoke', { method: 'POST' });
+  loadDevices();
+}
+
+async function unrevokeDevice(id) {
+  await fetch('/api/devices/' + id + '/unrevoke', { method: 'POST' });
+  loadDevices();
+}
+
 loadSettings();
 showDriveBanner();
+loadDevices();
 </script>
 {% endblock %}

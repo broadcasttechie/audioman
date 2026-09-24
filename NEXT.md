@@ -343,6 +343,31 @@ No migration was needed (the user confirmed only test data exists), so the chang
 - **Known gap:** multitrack detection is still unverified against a real multitrack recording (none
   exist yet) — revisit once the user has real filenames from that kind of recorder.
 
+## Built 2026-09-24: the waveform gets a scrollbar; the Android app's backend (PLAN 19.6)
+- **Waveform scrollbar:** the recording page's zoomable waveform now shows a second thin strip
+  underneath (the same overview-strip component the editor already used) once you zoom in — the
+  whole recording, with the visible window outlined, drag or tap it to jump there. Hidden while
+  showing the whole file, so it doesn't take up room when there's nowhere to scroll to. A Node
+  test drives an actual zoom-then-drag and checks the resulting view window.
+- **Android backend** (`app/device_api.py`, `app/device_auth.py`, `jobs/device_uploads.py`; the
+  app itself is still plan-only, unbuilt, per standing instruction): per-device tokens managed
+  from Settings ("Android app devices"); a chunked/resumable upload protocol (initiate -> PUT
+  chunks at a checked offset -> complete, verifying the real assembled checksum) that admits new
+  uploads through the same disk-budget check as the Inbox; a bulk "have you got this checksum?"
+  query; a metadata block applied directly at ingest (project/session/category/tags/title+notes/
+  a capture-time override that's approximate unless the app says otherwise); and browse/playback/
+  export/download exposed under `/api/device/v1/...`, device-token-gated, by delegating straight
+  into the existing web API handlers rather than duplicating them. An hourly sweeper fails and
+  cleans up any upload abandoned mid-transfer.
+- Verified: 9 new unit tests + a live run (`tests/live/live_device_api.py`) covering the whole
+  protocol including a deliberate wrong-offset resume, a checksum-mismatch refusal, an oversized-
+  chunk refusal, disk-admission refusal (with a check that a partially-resolved tag from the
+  rejected request was rolled back, not left behind), every metadata validation error, delegated
+  browse/waveform/export/download (and refusal without a token), and the abandoned-upload sweeper.
+  Full regression after: 145 unit tests, 16 live suites, 51 Node tests, all green.
+- Details, exact endpoint list and what's still open (parallel chunk upload, a dedicated `title`
+  column, the private flag): PLAN §19.6.
+
 ## Fixed 2026-09-21 (found by a regression run and by looking at Home)
 - **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
 - **Stranded queue rows:** a worker restarted mid-job left its row `running`, which blocked new runs of that job for
@@ -380,23 +405,24 @@ checks (`tests/live/`).
 | 1 | Time contract + location fixes | **done** |
 | 2 | Filename patterns + recorder profiles + date precision | **done** (no UI to edit profiles; API only) |
 | 3 | Project -> Session -> File | **done** |
-| 4 | [app] API v1 + per-device tokens | not started |
-| 5 | Inbox hardening, batch review, background filing | **done**; [app] upload API v2 not started |
-| 6 | Waveform + listening copy + reclaimable space | **done** ([app] device export API not started) |
+| 4 | [app] API v1 + per-device tokens | **done** |
+| 5 | Inbox hardening, batch review, background filing | **done**; [app] upload API v2 **done** (chunked/resumable, metadata at upload) |
+| 6 | Waveform + listening copy + reclaimable space | **done** ([app] device export API **done**: browse/playback/export delegated under device auth) |
 | 8 | Categories as data, Manage, Home, maps, place names | **done** (per-recording route map, all-recordings map, Photon place names, swappable providers) |
 | 9 | Placement + per-file copies + Drive remote | not started (Drive-copy design unresolved) |
 | 10 | Segments UI, then transcription worker | not started |
 
 **Not in the MVP, in the order I would do them:**
-1. **Package 4 -> 5 (upload v2) -> 6 (device export)** = the backend the Android app needs. The app itself stays plan-only.
-2. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
-3. **Non-destructive processing** (PLAN §21: gain/normalise, fades, filters, mono/stereo mix, sample-rate and bit-depth
+1. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
+2. **Non-destructive processing** (PLAN §21: gain/normalise, fades, filters, mono/stereo mix, sample-rate and bit-depth
    conversion incl. 32-bit float, FLAC/MP3/Opus export) as a new step on the editor, building on the clip/export plumbing
    that already exists.
-4. **Placement/Drive copies** (needs the Drive remote decision: `drive.file` OAuth vs full OAuth vs skip).
-5. Smaller: DAW project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
+3. **Placement/Drive copies** (needs the Drive remote decision: `drive.file` OAuth vs full OAuth vs skip).
+4. Smaller: DAW project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
 
 ~~Split-file joining and multitrack/outing grouping~~ **done 2026-09-22**, see the "Built" section above and PLAN §22.
+~~Package 4 -> 5 (upload v2) -> 6 (device export): the Android app's backend~~ **done 2026-09-24**, see the "Built"
+section below and PLAN §19.6. The app itself is still plan-only (unbuilt), per standing instruction.
 
 **Before the archive import:** back up the NAS share yourself; then drop the archive into the Drive Inbox in batches (the
 disk-space queue paces it; nothing is imported until a file has been stable for 5 minutes; 10 files per 15-minute run).

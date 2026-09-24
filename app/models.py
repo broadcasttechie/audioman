@@ -344,6 +344,55 @@ class JobRun(db.Model):
     log_tail = db.Column(db.Text)
 
 
+class DeviceToken(db.Model):
+    """
+    A per-device credential for the Android app (PLAN 19/22... see 22 for grouping, this is the
+    Android backend). The raw token is shown to the user exactly once, at creation, then never
+    again or anywhere else -- only its sha256 (`app/device_auth.py`) is stored, so a database
+    dump can't be used to impersonate a device. Revoking keeps the row (never deleted) so past
+    uploads still show which device they came from.
+    """
+    __tablename__ = "device_tokens"
+
+    id = db.Column(db.String, primary_key=True, default=gen_uuid)
+    label = db.Column(db.String, nullable=False)               # e.g. "Kristan's phone"
+    token_hash = db.Column(db.String, unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    last_used_at = db.Column(db.DateTime, nullable=True)
+    revoked_at = db.Column(db.DateTime, nullable=True)
+
+
+class UploadSession(db.Model):
+    """
+    One in-progress (or just-finished) chunked upload from the app (PLAN 19.3): declare the file
+    up front (name, size, sha256, and the metadata block it should land with), then PUT raw bytes
+    in order. `bytes_received` is the resumability contract -- after a dropped connection the app
+    GETs this row to find out where to resume, rather than resending from the start.
+    """
+    __tablename__ = "upload_sessions"
+
+    id = db.Column(db.String, primary_key=True, default=gen_uuid)   # may be client-chosen (idempotent initiate)
+    device_id = db.Column(db.String, db.ForeignKey("device_tokens.id"), nullable=False)
+
+    filename = db.Column(db.String, nullable=False)
+    declared_size = db.Column(db.BigInteger, nullable=False)
+    declared_checksum = db.Column(db.String, nullable=False)
+    # Resolved (not raw) at initiate time: project_id, session_id, category, tag_ids, notes,
+    # source_path, recorder_hint, captured_at (ISO, if the app is overriding it), captured_at_precision.
+    metadata_json = db.Column(db.JSON, nullable=True)   # never called `metadata`: db.Model reserves that name
+
+    bytes_received = db.Column(db.BigInteger, nullable=False, default=0)
+    # uploading -> completed | failed. A failed session (checksum mismatch, expired) must be
+    # re-initiated from scratch, never resumed.
+    status = db.Column(db.String, nullable=False, default="uploading")
+    staging_path = db.Column(db.String, nullable=True)
+    resource_id = db.Column(db.String, db.ForeignKey("resources.id"), nullable=True)   # set once completed
+    error_detail = db.Column(db.Text, nullable=True)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Setting(db.Model):
     """
     DB-backed overrides for a small set of Config values that make
