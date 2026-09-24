@@ -68,16 +68,20 @@
 
   /* Desktop: the waveform and the map are what benefit from real width, so they get it -- the
      rest (captured/category/project/session/tags/notes) stays a normal-width reading column
-     beside the map rather than stretching thin across the whole page. Below this width, .detail-
-     sections is a plain block and every section just stacks in source order, same as always. */
+     beside the map rather than stretching thin across the whole page. .detail-main/.detail-side
+     are two independent block containers (each just stacks its own sections by their own height)
+     placed side by side -- NOT each section given its own grid-column, which would share one
+     auto-placement row cursor across all of them and stagger the two columns against each other.
+     Below this width, .detail-sections is a plain block and everything is one stack in source
+     order, same as always. */
   @media (min-width: 1000px) {
     .detail-sections {
       display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
       gap: 1rem; align-items: start;
     }
     .sec-full { grid-column: 1 / -1; }
-    .sec-main { grid-column: 1; }
-    .sec-side { grid-column: 2; }
+    .detail-main { grid-column: 1; }
+    .detail-side { grid-column: 2; }
     .wf-canvas { height: 200px; }
     .map-box { height: 400px; }
   }
@@ -170,21 +174,29 @@ function renderDetail(resource) {
 
   // Order is the workflow: when and where come first because they're the anchors -- location/
   // photos enrichment hangs off the timestamp, and what a recording *is* (project, category,
-  // tags) is mostly answerable once you know when and where it was made. On a wide screen
-  // (.detail-sections grid, below) this same order also settles which of two columns a section
-  // lands in via its sec-main/sec-side class, independent of this source order -- narrower
-  // than the desktop breakpoint, the grid is just a single column and this order is all that
-  // matters, unchanged from before.
+  // tags) is mostly answerable once you know when and where it was made. On a wide screen this
+  // same grouping becomes two columns (.detail-main/.detail-side, each its own block container
+  // so it stacks by its own content height -- giving each column an explicit grid-column instead
+  // of a wrapper would share one auto-placement row cursor across every item and stagger them).
+  // Narrower than the desktop breakpoint, both columns are plain blocks and this is a single
+  // stack in this same order, unchanged from before.
   const sections = el('div', { class: 'detail-sections' });
   sections.append(buildWaveformSection(resource));
-  sections.append(buildCapturedAtSection(resource));
-  sections.append(buildLocationSection(resource));
-  if (resource.has_photos) sections.append(buildPhotosSection());
-  sections.append(buildCategorySection(resource));
-  sections.append(buildProjectSection(resource));
-  sections.append(buildSessionSection(resource));
-  sections.append(buildTagsSection(resource));
-  sections.append(buildNotesSection(resource));
+
+  const mainCol = el('div', { class: 'detail-main' });
+  mainCol.append(buildCapturedAtSection(resource));
+  mainCol.append(buildLocationSection(resource));
+  if (resource.has_photos) mainCol.append(buildPhotosSection());
+  sections.append(mainCol);
+
+  const sideCol = el('div', { class: 'detail-side' });
+  sideCol.append(buildCategorySection(resource));
+  sideCol.append(buildProjectSection(resource));
+  sideCol.append(buildSessionSection(resource));
+  sideCol.append(buildTagsSection(resource));
+  sideCol.append(buildNotesSection(resource));
+  sections.append(sideCol);
+
   sections.append(buildClipsSection(resource));
   container.append(sections);
 
@@ -202,7 +214,7 @@ function renderDetail(resource) {
 }
 
 function buildCategorySection(resource) {
-  const section = el('section', { class: 'sec-side' });
+  const section = el('section');
   section.append(el('h2', {}, ['Category']));
   const group = el('div', { class: 'btn-group' });
   // A file may still carry an archived category: show it (selected) even though it isn't offered for new use.
@@ -226,7 +238,7 @@ function buildCategorySection(resource) {
 }
 
 function buildProjectSection(resource) {
-  const section = el('section', { class: 'sec-side' });
+  const section = el('section');
   section.append(el('h2', {}, ['Project']));
   const select = el('select', {
     onchange: async (ev) => {
@@ -280,7 +292,7 @@ async function apiJson(method, url, body) {
 // A session is one night of a show / one outing. It lives inside the file's project (or, with
 // no project, is a loose outing), so only the sessions of the current project are offered.
 function buildSessionSection(resource) {
-  const section = el('section', { class: 'sec-side' });
+  const section = el('section');
   section.append(el('h2', {}, ['Session']));
   const here = allSessions.filter(s => (s.project_id || null) === (resource.project_id || null));
   const select = el('select', {
@@ -338,7 +350,7 @@ function buildSessionSection(resource) {
 }
 
 function buildNotesSection(resource) {
-  const section = el('section', { class: 'sec-side' });
+  const section = el('section');
   section.append(el('h2', {}, ['Notes']));
   const notes = el('textarea', { rows: '4', placeholder: 'Anything worth remembering about this recording' });
   notes.value = resource.notes || '';
@@ -372,7 +384,7 @@ function buildNotesSection(resource) {
 }
 
 function buildTagsSection(resource) {
-  const section = el('section', { class: 'sec-side' });
+  const section = el('section');
   section.append(el('h2', {}, ['Tags']));
   const chipRow = el('div', { class: 'chip-row' });
   for (const tag of currentTags) {
@@ -418,7 +430,7 @@ function buildTagsSection(resource) {
 }
 
 function buildCapturedAtSection(resource) {
-  const section = el('section', { class: 'sec-side' });
+  const section = el('section');
   const info = resource.filename_info || {};
   const precision = resource.captured_at ? (resource.captured_at_precision || 'exact') : 'unknown';
   section.append(el('h2', {}, [
@@ -508,7 +520,7 @@ async function getMapConfig() {
 
 function buildLocationSection(resource) {
   detachMap();
-  const section = el('section', { class: 'sec-main' });
+  const section = el('section');
   const loc = resource.location;
   section.append(el('h2', {}, ['Location ', loc ? el('span', { class: 'badge unset' }, [loc.source]) : '']));
 
@@ -674,7 +686,7 @@ async function mountTrackMap(holder, resource, picker, status, follow, followLab
 }
 
 function buildPhotosSection() {
-  const section = el('section', { class: 'sec-main' });
+  const section = el('section');
   section.append(el('h2', {}, ['Companion photos']));
   const strip = el('div', { class: 'photo-strip status' });
   strip.textContent = 'Loading...';

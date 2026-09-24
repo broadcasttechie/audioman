@@ -195,16 +195,24 @@ const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `expected ${b} +/-
     assert.strictEqual(audio.paused, false, 'tapping a clip plays it from its start');
   });
 
-  await test('sections are tagged for the desktop grid: waveform/clips full-width, map/photos the main column, the rest the side column', async () => {
+  await test('sections are grouped into two independently-stacking columns for the desktop layout (not each individually grid-placed, which staggered them)', async () => {
     const { detail, settle } = await run({}, { has_photos: true });
     await settle(60);
-    const byClass = (cls) => detail.querySelectorAll('.' + cls).map(s => (s.querySelector('h2') || {}).textContent || '');
-    const full = byClass('sec-full'), main = byClass('sec-main'), side = byClass('sec-side');
+    const headingsIn = (node) => node.querySelectorAll('h2').map(h => h.textContent);
+    const full = detail.querySelectorAll('.sec-full').map(s => (s.querySelector('h2') || {}).textContent || '');
     assert.ok(full.some(t => /Waveform/.test(t)) && full.some(t => /Clips/.test(t)), 'full-width: ' + full);
-    assert.ok(main.some(t => /Location/.test(t)) && main.some(t => /Companion photos/.test(t)), 'main column: ' + main);
-    for (const label of ['Captured at', 'Category', 'Project', 'Session', 'Tags', 'Notes']) {
-      assert.ok(side.some(t => t.includes(label)), `${label} is in the side column: ${side}`);
+
+    const main = detail.querySelector('.detail-main'), side = detail.querySelector('.detail-side');
+    assert.ok(main && side, 'both column wrappers exist, each a plain block container');
+    const mainHeadings = headingsIn(main), sideHeadings = headingsIn(side);
+    for (const label of ['Captured at', 'Location', 'Companion photos']) {
+      assert.ok(mainHeadings.some(t => t.includes(label)), `${label} is in the main column: ${mainHeadings}`);
     }
+    for (const label of ['Category', 'Project', 'Session', 'Tags', 'Notes']) {
+      assert.ok(sideHeadings.some(t => t.includes(label)), `${label} is in the side column: ${sideHeadings}`);
+    }
+    assert.strictEqual(detail.querySelectorAll('.sec-main').length + detail.querySelectorAll('.sec-side').length, 0,
+      'no individual section carries its own grid placement any more -- the two wrapper divs do it instead');
     assert.ok(detail.querySelector('.detail-sections'), 'all of it sits inside the one grid container');
   });
 
