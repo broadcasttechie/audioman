@@ -195,5 +195,18 @@ const near = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `expected ${b} +/-
     assert.strictEqual(audio.paused, false, 'tapping a clip plays it from its start');
   });
 
+  await test('sections are tagged for the desktop grid: waveform/clips full-width, map/photos the main column, the rest the side column', async () => {
+    const { detail, settle } = await run({}, { has_photos: true });
+    await settle(60);
+    const byClass = (cls) => detail.querySelectorAll('.' + cls).map(s => (s.querySelector('h2') || {}).textContent || '');
+    const full = byClass('sec-full'), main = byClass('sec-main'), side = byClass('sec-side');
+    assert.ok(full.some(t => /Waveform/.test(t)) && full.some(t => /Clips/.test(t)), 'full-width: ' + full);
+    assert.ok(main.some(t => /Location/.test(t)) && main.some(t => /Companion photos/.test(t)), 'main column: ' + main);
+    for (const label of ['Captured at', 'Category', 'Project', 'Session', 'Tags', 'Notes']) {
+      assert.ok(side.some(t => t.includes(label)), `${label} is in the side column: ${side}`);
+    }
+    assert.ok(detail.querySelector('.detail-sections'), 'all of it sits inside the one grid container');
+  });
+
   console.log(`\n${passed} passed` + (process.exitCode ? ', SOME FAILED' : ''));
 })();

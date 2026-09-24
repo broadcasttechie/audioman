@@ -12,6 +12,10 @@
     padding-bottom: calc(var(--nav-size) + env(safe-area-inset-bottom));
   }
   .container { max-width: 640px; margin: 0 auto; padding: 1rem; }
+  /* Opt-in per page (override the container_class block with "wide"): pages whose content is
+     genuinely spatial -- a waveform, a map -- benefit from real desktop width; a page that's
+     mostly text or form fields (Settings, Manage) does not, and stays at the width above. */
+  @media (min-width: 1000px) { .container.wide { max-width: 1100px; } }
   h1 { font-size: 1.3rem; margin: 0.5rem 0 1rem; }
   section { border: 1px solid #8884; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
   h2 { font-size: 1.05rem; margin-top: 0; }
@@ -74,7 +78,7 @@
   <a href="/manage" class="{{ 'active' if active_tab == 'manage' else '' }}"><span class="icon">🗂️</span>Manage</a>
   <a href="/settings" class="{{ 'active' if active_tab == 'settings' else '' }}"><span class="icon">⚙️</span>Settings</a>
 </nav>
-<div class="container">
+<div class="container {% block container_class %}{% endblock %}">
 {% block content %}{% endblock %}
 </div>
 {% block scripts %}{% endblock %}

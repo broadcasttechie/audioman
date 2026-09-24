@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title_suffix %} — Review{% endblock %}
+{% block container_class %}wide{% endblock %}
 {% block head %}
 <style>
   :root { --player-size: 64px; }
@@ -64,6 +65,22 @@
   .loc-actions button { font-size: 0.85rem; padding: 0.25rem 0.7rem; }
   .loc-actions label { font-size: 0.85rem; }
   @media (min-width: 720px) { .player-bar { bottom: 0; } }
+
+  /* Desktop: the waveform and the map are what benefit from real width, so they get it -- the
+     rest (captured/category/project/session/tags/notes) stays a normal-width reading column
+     beside the map rather than stretching thin across the whole page. Below this width, .detail-
+     sections is a plain block and every section just stacks in source order, same as always. */
+  @media (min-width: 1000px) {
+    .detail-sections {
+      display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+      gap: 1rem; align-items: start;
+    }
+    .sec-full { grid-column: 1 / -1; }
+    .sec-main { grid-column: 1; }
+    .sec-side { grid-column: 2; }
+    .wf-canvas { height: 200px; }
+    .map-box { height: 400px; }
+  }
 </style>
 {% endblock %}
 {% block content %}
@@ -151,20 +168,25 @@ function renderDetail(resource) {
     container.append(banner);
   }
 
-  // Order is the workflow: when and where come first because they're
-  // the anchors -- location/photos enrichment hangs off the timestamp,
-  // and what a recording *is* (project, category, tags) is mostly
-  // answerable once you know when and where it was made.
-  container.append(buildWaveformSection(resource));
-  container.append(buildCapturedAtSection(resource));
-  container.append(buildLocationSection(resource));
-  if (resource.has_photos) container.append(buildPhotosSection());
-  container.append(buildCategorySection(resource));
-  container.append(buildProjectSection(resource));
-  container.append(buildSessionSection(resource));
-  container.append(buildTagsSection(resource));
-  container.append(buildNotesSection(resource));
-  container.append(buildClipsSection(resource));
+  // Order is the workflow: when and where come first because they're the anchors -- location/
+  // photos enrichment hangs off the timestamp, and what a recording *is* (project, category,
+  // tags) is mostly answerable once you know when and where it was made. On a wide screen
+  // (.detail-sections grid, below) this same order also settles which of two columns a section
+  // lands in via its sec-main/sec-side class, independent of this source order -- narrower
+  // than the desktop breakpoint, the grid is just a single column and this order is all that
+  // matters, unchanged from before.
+  const sections = el('div', { class: 'detail-sections' });
+  sections.append(buildWaveformSection(resource));
+  sections.append(buildCapturedAtSection(resource));
+  sections.append(buildLocationSection(resource));
+  if (resource.has_photos) sections.append(buildPhotosSection());
+  sections.append(buildCategorySection(resource));
+  sections.append(buildProjectSection(resource));
+  sections.append(buildSessionSection(resource));
+  sections.append(buildTagsSection(resource));
+  sections.append(buildNotesSection(resource));
+  sections.append(buildClipsSection(resource));
+  container.append(sections);
 
   const fileBtn = el('button', {
     class: 'file-btn' + (resource.category ? ' ready' : ''),
@@ -180,7 +202,7 @@ function renderDetail(resource) {
 }
 
 function buildCategorySection(resource) {
-  const section = el('section');
+  const section = el('section', { class: 'sec-side' });
   section.append(el('h2', {}, ['Category']));
   const group = el('div', { class: 'btn-group' });
   // A file may still carry an archived category: show it (selected) even though it isn't offered for new use.
@@ -204,7 +226,7 @@ function buildCategorySection(resource) {
 }
 
 function buildProjectSection(resource) {
-  const section = el('section');
+  const section = el('section', { class: 'sec-side' });
   section.append(el('h2', {}, ['Project']));
   const select = el('select', {
     onchange: async (ev) => {
@@ -258,7 +280,7 @@ async function apiJson(method, url, body) {
 // A session is one night of a show / one outing. It lives inside the file's project (or, with
 // no project, is a loose outing), so only the sessions of the current project are offered.
 function buildSessionSection(resource) {
-  const section = el('section');
+  const section = el('section', { class: 'sec-side' });
   section.append(el('h2', {}, ['Session']));
   const here = allSessions.filter(s => (s.project_id || null) === (resource.project_id || null));
   const select = el('select', {
@@ -316,7 +338,7 @@ function buildSessionSection(resource) {
 }
 
 function buildNotesSection(resource) {
-  const section = el('section');
+  const section = el('section', { class: 'sec-side' });
   section.append(el('h2', {}, ['Notes']));
   const notes = el('textarea', { rows: '4', placeholder: 'Anything worth remembering about this recording' });
   notes.value = resource.notes || '';
@@ -350,7 +372,7 @@ function buildNotesSection(resource) {
 }
 
 function buildTagsSection(resource) {
-  const section = el('section');
+  const section = el('section', { class: 'sec-side' });
   section.append(el('h2', {}, ['Tags']));
   const chipRow = el('div', { class: 'chip-row' });
   for (const tag of currentTags) {
@@ -396,7 +418,7 @@ function buildTagsSection(resource) {
 }
 
 function buildCapturedAtSection(resource) {
-  const section = el('section');
+  const section = el('section', { class: 'sec-side' });
   const info = resource.filename_info || {};
   const precision = resource.captured_at ? (resource.captured_at_precision || 'exact') : 'unknown';
   section.append(el('h2', {}, [
@@ -486,7 +508,7 @@ async function getMapConfig() {
 
 function buildLocationSection(resource) {
   detachMap();
-  const section = el('section');
+  const section = el('section', { class: 'sec-main' });
   const loc = resource.location;
   section.append(el('h2', {}, ['Location ', loc ? el('span', { class: 'badge unset' }, [loc.source]) : '']));
 
@@ -652,7 +674,7 @@ async function mountTrackMap(holder, resource, picker, status, follow, followLab
 }
 
 function buildPhotosSection() {
-  const section = el('section');
+  const section = el('section', { class: 'sec-main' });
   section.append(el('h2', {}, ['Companion photos']));
   const strip = el('div', { class: 'photo-strip status' });
   strip.textContent = 'Loading...';
@@ -674,7 +696,7 @@ function buildClipsSection(resource) {
   // Read-only summary: tap a clip to hear it here. Creating, renaming, exporting and deleting
   // clips all happen in the full-screen editor, which has a real waveform to drag on instead of
   // typing seconds into two number fields -- keeping one place for that, not two that can drift.
-  const section = el('section');
+  const section = el('section', { class: 'sec-full' });
   section.append(el('h2', {}, [
     'Clips ',
     el('a', { href: `/edit/${resource.id}`, class: 'hint', style: 'font-weight:normal;font-size:0.8rem' }, ['Create or manage clips in the editor →']),
@@ -725,7 +747,7 @@ function detachWaveform() {
 
 function buildWaveformSection(resource) {
   detachWaveform();
-  const section = el('section');
+  const section = el('section', { class: 'sec-full' });
   section.append(el('h2', {}, ['Waveform ', el('a', { href: `/edit/${resource.id}`, class: 'hint', style: 'font-weight:normal;font-size:0.8rem' }, ['Open the editor →'])]));
   const wrap = el('div', { class: 'wf-wrap' });
   const note = el('p', { class: 'hint' }, ['Generating the waveform… this takes a few seconds.']);
