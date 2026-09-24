@@ -14,7 +14,10 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
 `audio-manager-worker@1.service`. No pytest locally (no Flask); run
 `python3 -m unittest discover -s tests` **on the container** with
 `/etc/audio-manager/audio-manager.env` loaded and `PYTHONPATH=/opt/audio-manager`.
-`audiowaveform` 1.10.2 is installed on the container. No git remote yet.
+`audiowaveform` 1.10.2 is installed on the container. Git remote: `origin` ->
+`git@github.com:broadcasttechie/audioman` (added 2026-09-24), **public** --
+the repo has real local IPs/hostnames in PLAN.md/DEPLOYMENT.md, flip it
+private on GitHub if that wasn't intended.
 
 ## Decisions (all stated or agreed by the user)
 - **Model:** Project → Session → File. A session is one night (shows) or one
@@ -526,5 +529,6 @@ work packages above (marked [app], updated 2026-09-21 at the user's request:
 
 ## Not decided / parked
 Private flag; encryption at rest; soundcheck-vs-show sessions; tag "kind";
-semantic search; git remote; nginx `client_max_body_size` and Flask
-`MAX_CONTENT_LENGTH` (uploads of large files).
+semantic search; nginx `client_max_body_size` and Flask
+`MAX_CONTENT_LENGTH` (uploads of large files, though the device-upload path
+no longer needs a large one -- see PLAN 19.6).
