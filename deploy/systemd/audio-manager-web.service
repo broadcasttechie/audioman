@@ -1,0 +1,26 @@
+# Save as /etc/systemd/system/audio-manager-web.service
+#
+# The Flask app on :5000. Every job .service in this directory curls
+# 127.0.0.1:5000, so this must be running for any timer to do anything.
+# On start run.py creates missing tables and adds new columns
+# (app/schema.py), so when a deploy adds columns restart this unit
+# BEFORE the workers.
+#
+#   systemctl daemon-reload
+#   systemctl enable --now audio-manager-web.service
+
+[Unit]
+Description=Audio Manager web app (Flask on :5000)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/audio-manager
+EnvironmentFile=/etc/audio-manager/audio-manager.env
+ExecStart=/opt/audio-manager/.venv/bin/python3 run.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

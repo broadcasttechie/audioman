@@ -25,11 +25,16 @@
 [Unit]
 Description=Audio Manager job queue worker (instance %i)
 After=network-online.target postgresql.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/audio-manager
-ExecStart=/usr/bin/python3 /opt/audio-manager/jobs/worker.py
+EnvironmentFile=/etc/audio-manager/audio-manager.env
+# Run as a module, never as `python3 jobs/worker.py`: a script path puts
+# jobs/ first on sys.path, so jobs/queue.py shadows the stdlib `queue`
+# module and requests/urllib3 fail to import (DEPLOYMENT.md).
+ExecStart=/opt/audio-manager/.venv/bin/python3 -m jobs.worker
 Restart=on-failure
 RestartSec=5
 
