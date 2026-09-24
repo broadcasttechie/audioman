@@ -367,6 +367,22 @@ No migration was needed (the user confirmed only test data exists), so the chang
   Full regression after: 145 unit tests, 16 live suites, 51 Node tests, all green.
 - Details, exact endpoint list and what's still open (parallel chunk upload, a dedicated `title`
   column, the private flag): PLAN §19.6.
+- **Clips move fully to the editor:** the recording page's own clip-creation form (type start/end
+  seconds by hand) is gone — a real duplicate of the editor's drag-on-a-waveform one, and strictly
+  worse. Clips here are now a read-only, tap-to-hear list; creating/renaming/exporting/deleting all
+  happen in `/edit/<id>`, one link away.
+- **Desktop layout, proposed as a mockup and approved:** an opt-in `.container.wide` class
+  (`base.html`, `{% block container_class %}`) raises the page width cap from 640px to 1100px at
+  1000px+ viewports — only the recording page uses it so far; Settings/Manage and the rest stay
+  narrow and readable. On the recording page at that width, the waveform spans the full width and
+  gets taller, the map moves into a wider left column with the companion photos, and the metadata
+  (captured/category/project/session/tags/notes) sits in a column beside them instead of stacking
+  one section at a time below everything. Below 1000px nothing changes. The editor already had no
+  width cap, so it needed no change. **Found along the way:** a doc comment that quoted the new
+  Jinja block's own syntax as an example got parsed by Jinja anyway ("block defined twice", a 500
+  on every page) — fixed; and confirmed that a template-only change needs a web restart to take
+  effect here, same as a schema change (Flask caches compiled templates; two earlier pushes this
+  session looked deployed by their 200 checks but weren't actually live until this restart).
 
 ## Fixed 2026-09-21 (found by a regression run and by looking at Home)
 - **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
