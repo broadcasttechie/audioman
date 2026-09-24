@@ -70,7 +70,7 @@ URLs/keys, device tokens) · `/edit/<id>` Waveform editor
   and maintenance jobs
 - `config.py`: every path, remote, template and tunable, each overridable by
   an environment variable
-- `deploy/systemd/`: the worker unit plus a `.service`/`.timer` pair per
+- `deploy/systemd/`: the web and worker units plus a `.service`/`.timer` pair per
   scheduled job
 - `tests/`: unit tests (`test_*.py`), JS tests (`tests/js/`) and live
   end-to-end checks (`tests/live/`)
@@ -135,8 +135,13 @@ the real Postgres, NAS, worker and services. See `tests/live/README.md`.
 ## Deployment
 
 Production runs on a Proxmox LXC with the NAS bind-mounted at `/mnt/nas/audio`.
-You need the web service, at least one `audio-manager-worker@N` instance, and
-the job timers from `deploy/systemd/`. Two timers are deliberately left
+All the unit files are in `deploy/systemd/`: `audio-manager-web.service` (the
+Flask app on `:5000`), the `audio-manager-worker@.service` template (enable at
+least `@1`) and a `.service`/`.timer` pair per scheduled job. The web and
+worker units run the venv's Python at `/opt/audio-manager/.venv` and read
+`/etc/audio-manager/audio-manager.env`. The job units only `curl` the web app,
+so they need neither. When a deploy adds columns, restart the web service
+before the workers. Two timers are deliberately left
 disabled: `refile-all` (it must never move audio unattended) and
 `nas-to-drive-library` (it can't work with a service account). Full details,
 including the Drive service-account setup and the nginx upload limits, are in

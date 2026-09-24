@@ -14,7 +14,8 @@ in jobs/queue.py (bounded attempts, backoff delay stored in the DB)
 and jobs/retry.py (bounded external-call retries, circuit breaker) —
 not to this outer loop, which is supposed to keep running.
 
-Usage: `python3 worker.py`, or via the systemd unit.
+Usage: `python3 -m jobs.worker` from the repo root (never `python3 jobs/worker.py`:
+jobs/queue.py would shadow the stdlib `queue` module), or via the systemd unit.
 """
 import logging
 import signal
