@@ -36,6 +36,13 @@
   .badge { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; }
   .badge.set { background: #2a72; }
   .badge.unset { background: #8884; }
+  /* Tag chips: shared by the recording page and the editor's per-clip tags (PLAN 18.4). */
+  .chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.6rem;
+    border-radius: 999px; background: #8882; font-size: 0.85rem;
+  }
+  .chip button { padding: 0 0.2rem; border: none; background: none; font-size: 0.9rem; line-height: 1; }
   .status { font-size: 0.85rem; min-height: 1.2rem; margin-top: 0.5rem; }
   .status.ok { color: #2a7; }
   .status.err { color: #d55; }

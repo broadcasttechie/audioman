@@ -60,7 +60,7 @@ function formatCapturedAt(iso, source, precision) {
   if (!iso) return 'No timestamp';
   const d = new Date(iso);
   const formatted = d.toLocaleString(undefined, {
-    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
   let label = formatted;
   if (precision === 'approximate') label += ' (approx.)';

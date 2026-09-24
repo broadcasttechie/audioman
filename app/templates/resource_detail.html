@@ -17,13 +17,6 @@
   .btn-group button { flex: 1 1 auto; min-width: 45%; }
   .btn-group button.selected { background: #2a72; border-color: #2a7; font-weight: 600; }
 
-  .chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
-  .chip {
-    display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.6rem;
-    border-radius: 999px; background: #8882; font-size: 0.85rem;
-  }
-  .chip button { padding: 0 0.2rem; border: none; background: none; font-size: 0.9rem; line-height: 1; }
-
   .photo-strip { display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.25rem; }
   .photo-strip img { height: 90px; border-radius: 6px; flex-shrink: 0; }
 
@@ -439,13 +432,15 @@ function buildCapturedAtSection(resource) {
     ' ',
     el('span', { class: precision === 'exact' ? 'badge set' : 'badge unset' }, [precision]),
   ]));
-  const input = el('input', { type: 'datetime-local' });
+  const input = el('input', { type: 'datetime-local', step: '1' });
   if (resource.captured_at) {
     // captured_at is a UTC instant ("...Z") from the API -- render it in the browser's
-    // local time for editing, then convert back to a UTC instant on save below.
+    // local time for editing, then convert back to a UTC instant on save below. step=1
+    // exposes a seconds field too, since some sources (GPS, filenames with a seconds
+    // group) capture more than minute precision and editing here shouldn't truncate it.
     const d = new Date(resource.captured_at);
     const pad = n => String(n).padStart(2, '0');
-    input.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    input.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   }
   input.addEventListener('change', async () => {
     if (!input.value) return;
@@ -475,7 +470,7 @@ function buildCapturedAtSection(resource) {
     const d = new Date(resource.suggested_captured_at);
     const when = info.time_known === false
       ? d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })
-      : d.toLocaleString(undefined, { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      : d.toLocaleString(undefined, { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const row = el('p', { class: 'hint' }, [
       `The filename suggests ${when}` + (info.profile ? ` (${info.profile})` : '') +
         (info.time_known === false ? ', with no time of day. ' : '. '),

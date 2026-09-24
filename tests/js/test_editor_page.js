@@ -20,25 +20,38 @@ const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''}
 
 async function run(opts = {}) {
   const dom = createDom();
-  const state = { clips: (opts.clips || []).map(c => ({ ...c })), calls: [], exportPolls: 0 };
+  const state = { clips: (opts.clips || []).map(c => ({ ...c })), tags: (opts.tags || []).map(t => ({ ...t })), calls: [], exportPolls: 0 };
   const resource = { id: RID, filename: 'Parkridge birds.wav', duration_seconds: 60, has_preview: true, ...(opts.resource || {}) };
   const fetchStub = async (url, o = {}) => {
     const u = String(url).split('?')[0], method = (o.method || 'GET').toUpperCase(), body = o.body ? JSON.parse(o.body) : null;
     state.calls.push([method, u, body]);
     if (u === `/api/resources/${RID}` && method === 'GET') return json(resource);
     if (u === `/api/resources/${RID}/clips` && method === 'GET') return json(state.clips);
-    if (u === `/api/resources/${RID}/clips` && method === 'POST') { const c = { id: 'c' + (state.clips.length + 1), resource_id: RID, ...body }; state.clips.push(c); return json(c, 201); }
-    if (/^\/api\/clips\/[^/]+$/.test(u) && method === 'PATCH') { const c = state.clips.find(x => x.id === u.split('/').pop()); Object.assign(c, body); return json(c); }
+    // Real server contract: tags go IN as ids (the shared pool), come back OUT as names -- the
+    // fake mirrors that asymmetry rather than just echoing the request body back.
+    const namesForIds = (ids) => ids.map(id => (state.tags.find(t => t.id === id) || {}).name).filter(Boolean);
+    if (u === `/api/resources/${RID}/clips` && method === 'POST') {
+      const patch = { ...body }; if ('tags' in patch) patch.tags = namesForIds(patch.tags);
+      const c = { id: 'c' + (state.clips.length + 1), resource_id: RID, tags: [], transcript: null, speaker: null, ...patch };
+      state.clips.push(c); return json(c, 201);
+    }
+    if (/^\/api\/clips\/[^/]+$/.test(u) && method === 'PATCH') {
+      const c = state.clips.find(x => x.id === u.split('/').pop());
+      const patch = { ...body }; if ('tags' in patch) patch.tags = namesForIds(patch.tags);
+      Object.assign(c, patch); return json(c);
+    }
     if (/^\/api\/clips\/[^/]+$/.test(u) && method === 'DELETE') { state.clips = state.clips.filter(x => x.id !== u.split('/').pop()); return { ok: true, status: 204, statusText: 'x', json: async () => null }; }
     if (u === `/api/resources/${RID}/export` && method === 'POST') return json({ id: 'e1', status: 'queued' }, 202);
     if (u === '/api/exports/e1') return json(++state.exportPolls < 2 ? { id: 'e1', status: 'running' } : { id: 'e1', status: 'success' });
     if (u === `/api/resources/${RID}/waveform`) return opts.waveform ? opts.waveform() : bin(makeDat());
+    if (u === '/api/tags' && method === 'GET') return json(state.tags);
+    if (u === '/api/tags' && method === 'POST') { let t = state.tags.find(x => x.name === body.name); if (!t) { t = { id: 't' + (state.tags.length + 1), name: body.name }; state.tags.push(t); } return json(t, 201); }
     throw new Error('unexpected fetch: ' + method + ' ' + u);
   };
   const ctx = {
-    document: dom.document, window: { addEventListener() {}, devicePixelRatio: 1 }, fetch: fetchStub, console, Promise, Math, Date, JSON, Array, Object, Number, String, Set, Map, Error, isFinite,
+    document: dom.document, window: { addEventListener() {}, devicePixelRatio: 1 }, fetch: fetchStub, console, Promise, Math, Date, JSON, Array, Object, Number, String, Set, Map, Error, isFinite, URLSearchParams,
     setTimeout: (fn, ms) => setTimeout(fn, Math.min(ms || 0, 10)), clearTimeout, requestAnimationFrame: (fn) => { setTimeout(fn, 4); return 1; },
-    confirm: () => true, alert: () => {}, location: { href: '' },
+    confirm: () => true, alert: () => {}, location: { href: '', search: opts.query || '' },
   };
   ctx.window.document = dom.document;
   vm.createContext(ctx);
@@ -186,6 +199,48 @@ const test = async (name, fn) => { try { await fn(); passed++; console.log('PASS
     assert.strictEqual(t.q('#sel-len').value, '4.00 s', 'times can be chosen without the picture');
     const bad = await run({ waveform: () => ({ ok: false, status: 500, statusText: 'x', json: async () => ({ error: 'the audio file could not be read' }), arrayBuffer: async () => new ArrayBuffer(0) }) });
     assert.ok(/could not be loaded: the audio file could not be read/.test(bad.ed.textContent));
+  });
+
+  await test('a clip shows its speaker/tags/transcript, and each can be edited (PLAN 18.4: segments)', async () => {
+    const t = await run({
+      clips: [{ id: 'c1', start_seconds: 5, end_seconds: 10, label: 'Heron', tags: ['Jacob', 'birds'], transcript: 'look, a heron', speaker: 'Jacob' }],
+      tags: [{ id: 't1', name: 'Jacob' }, { id: 't2', name: 'birds' }, { id: 't3', name: 'water' }],
+    });
+    const details = t.q('.clip-details');
+    assert.ok(details, 'the clip has a details panel');
+    const textInputs = details.querySelectorAll('input').filter(i => i.type === 'text');
+    const speakerIn = textInputs[0], tagIn = textInputs[1];
+    assert.strictEqual(speakerIn.value, 'Jacob', 'speaker is shown');
+    const chipText = () => details.querySelectorAll('.chip').map(c => c.textContent.replace('×', ''));
+    assert.deepStrictEqual(chipText().sort(), ['Jacob', 'birds'].sort(), 'both tags are shown as chips: ' + chipText());
+    const transcriptIn = details.querySelector('textarea');
+    assert.strictEqual(transcriptIn.value, 'look, a heron', 'transcript is shown');
+
+    speakerIn.value = 'Jacob R.'; speakerIn.dispatch('change'); await t.settle();
+    assert.deepStrictEqual(t.state.calls.filter(c => c[0] === 'PATCH').pop()[2], { speaker: 'Jacob R.' });
+
+    transcriptIn.value = 'look, a heron by the water'; transcriptIn.dispatch('change'); await t.settle();
+    assert.deepStrictEqual(t.state.calls.filter(c => c[0] === 'PATCH').pop()[2], { transcript: 'look, a heron by the water' });
+
+    details.querySelectorAll('.chip').find(c => c.textContent.includes('birds')).querySelector('button').click();
+    await t.settle();
+    assert.deepStrictEqual(t.state.calls.filter(c => c[0] === 'PATCH').pop()[2], { tags: ['t1'] }, 'removing "birds" leaves just Jacob\'s id');
+    assert.deepStrictEqual(chipText(), ['Jacob'], 'the chip is gone from the page too');
+
+    tagIn.value = 'water'; tagIn.dispatch('keydown', { key: 'Enter' }); await t.settle();
+    assert.ok(t.state.calls.some(c => c[0] === 'POST' && c[1] === '/api/tags'), 'the new tag name was resolved via POST /api/tags (find-or-create, same pool as file tags)');
+    assert.deepStrictEqual(t.state.calls.filter(c => c[0] === 'PATCH').pop()[2].tags.sort(), ['t1', 't3'].sort(), 'the clip now carries Jacob + the newly added water tag');
+    assert.deepStrictEqual(chipText().sort(), ['Jacob', 'water'].sort());
+  });
+
+  await test('a segment-search result (?clip=) lands on that moment: selected, playing, scrolled into view', async () => {
+    const t = await run({
+      clips: [{ id: 'c1', start_seconds: 1, end_seconds: 2 }, { id: 'c2', start_seconds: 30, end_seconds: 34, label: 'Heron' }],
+      query: '?clip=c2',
+    });
+    assert.ok(t.q('#clip-c2').classList.contains('sel'), 'the linked clip is selected');
+    near(t.audio.currentTime, 30, 0.01, 'and playback starts at its beginning');
+    assert.strictEqual(t.audio.paused, false, 'and it is actually playing, not just cued up');
   });
 
   console.log(`\n${passed} passed` + (process.exitCode ? ', SOME FAILED' : ''));

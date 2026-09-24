@@ -126,9 +126,12 @@ function renderTagList(list) {
 
 function tagCard(t) {
   const others = state.tags.filter(x => x.id !== t.id);
+  const clipCount = t.clip_count || 0;
+  const inUse = t.file_count + clipCount;
+  const usageText = `${t.file_count} file${t.file_count === 1 ? '' : 's'}` + (clipCount ? ` · ${clipCount} clip${clipCount === 1 ? '' : 's'}` : '');
   const mergeSel = el('select', {}, [el('option', { value: '' }, ['Merge into…'])].concat(others.map(o => el('option', { value: o.id }, [o.name]))));
   const card = el('div', { class: 'item' }, [
-    el('div', { class: 'item-head' }, [el('span', { class: 'name' }, [t.name]), el('span', { class: 'muted' }, [`${t.file_count} file${t.file_count === 1 ? '' : 's'}`])]),
+    el('div', { class: 'item-head' }, [el('span', { class: 'name' }, [t.name]), el('span', { class: 'muted' }, [usageText])]),
     el('div', { class: 'actions' }, [
       el('button', { type: 'button', onclick: guard(async () => {
         const name = prompt('New name for this tag', t.name);
@@ -144,13 +147,13 @@ function tagCard(t) {
       el('button', { type: 'button', onclick: guard(async () => {
         if (!mergeSel.value) return msg('Choose the tag to merge into first.', true);
         const into = state.tags.find(x => x.id === mergeSel.value);
-        if (!confirm(`Move all ${t.file_count} use(s) of "${t.name}" onto "${into.name}" and remove "${t.name}"?`)) return;
+        if (!confirm(`Move all uses of "${t.name}" (${usageText}) onto "${into.name}" and remove "${t.name}"?`)) return;
         await apiJson('POST', `/api/tags/${t.id}/merge`, { into: mergeSel.value });
         await loadAll(); msg('Merged');
       }) }, ['Merge']),
       el('button', { type: 'button', onclick: guard(async () => {
-        if (!confirm(t.file_count ? `Remove "${t.name}" from ${t.file_count} file(s) and delete it?` : `Delete "${t.name}"?`)) return;
-        await apiJson('DELETE', `/api/tags/${t.id}` + (t.file_count ? '?force=1' : ''));
+        if (!confirm(inUse ? `Remove "${t.name}" from ${usageText} and delete it?` : `Delete "${t.name}"?`)) return;
+        await apiJson('DELETE', `/api/tags/${t.id}` + (inUse ? '?force=1' : ''));
         await loadAll(); msg('Deleted');
       }) }, ['Delete']),
     ]),

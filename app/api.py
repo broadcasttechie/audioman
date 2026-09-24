@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from .extensions import db
-from .models import resource_tags, Category, Resource, RecordingSession, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint, RecorderProfile
+from .models import resource_tags, clip_tags, Category, Resource, RecordingSession, Project, Tag, Location, JobRun, FileEvent, Clip, ResourcePhoto, Export, Setting, TrackPoint, RecorderProfile
 from .settings import get_config, set_config, settings_snapshot, SECRET_KEYS
 from config import Config
 from .timeutil import parse_to_utc_naive, to_utc_iso
@@ -956,6 +956,18 @@ def list_clips(resource_id):
     return jsonify([_clip_to_dict(c) for c in clips])
 
 
+def _resolve_clip_tags(tag_ids):
+    """tag_ids: already checked to be a list of strings. Returns (tags, None) or (None, error) --
+    same rule as a resource's tags (PLAN 18.4: one shared pool, so an unknown id is refused the
+    same way here as everywhere else, never silently created)."""
+    wanted = list(dict.fromkeys(tag_ids))
+    found = {t.id: t for t in Tag.query.filter(Tag.id.in_(wanted)).all()} if wanted else {}
+    unknown = [t for t in wanted if t not in found]
+    if unknown:
+        return None, f"unknown tag id(s): {unknown}"
+    return [found[t] for t in wanted], None
+
+
 @bp.post("/resources/<resource_id>/clips")
 def create_clip(resource_id):
     resource = Resource.query.get_or_404(resource_id)
@@ -970,6 +982,13 @@ def create_clip(resource_id):
             "error": f"end_seconds ({data['end_seconds']}) exceeds the "
                      f"resource's duration ({resource.duration_seconds})",
         }), 400
+    tags = []
+    if "tags" in data:
+        if not isinstance(data["tags"], list) or not all(isinstance(t, str) for t in data["tags"]):
+            return jsonify({"error": "tags must be a list of tag id strings"}), 400
+        tags, error = _resolve_clip_tags(data["tags"])
+        if error:
+            return jsonify({"error": error}), 400
 
     clip = Clip(
         resource_id=resource_id,
@@ -977,6 +996,9 @@ def create_clip(resource_id):
         end_seconds=data["end_seconds"],
         label=data.get("label"),
         notes=data.get("notes"),
+        transcript=data.get("transcript"),
+        speaker=data.get("speaker"),
+        tags=tags,
     )
     db.session.add(clip)
     db.session.commit()
@@ -987,7 +1009,14 @@ def create_clip(resource_id):
 def update_clip(clip_id):
     clip = Clip.query.get_or_404(clip_id)
     data = request.get_json() or {}
-    for field in ("start_seconds", "end_seconds", "label", "notes"):
+    if "tags" in data:
+        if not isinstance(data["tags"], list) or not all(isinstance(t, str) for t in data["tags"]):
+            return jsonify({"error": "tags must be a list of tag id strings"}), 400
+        tags, error = _resolve_clip_tags(data["tags"])
+        if error:
+            return jsonify({"error": error}), 400
+        clip.tags = tags
+    for field in ("start_seconds", "end_seconds", "label", "notes", "transcript", "speaker"):
         if field in data:
             setattr(clip, field, data[field])
     db.session.commit()
@@ -1026,16 +1055,46 @@ def export_clip_route(clip_id):
     return jsonify(_export_to_dict(export)), 202
 
 
-def _clip_to_dict(c: Clip):
-    return {
+def _clip_to_dict(c: Clip, with_resource=False):
+    d = {
         "id": c.id,
         "resource_id": c.resource_id,
         "start_seconds": c.start_seconds,
         "end_seconds": c.end_seconds,
         "label": c.label,
         "notes": c.notes,
+        "tags": [t.name for t in c.tags],
+        "transcript": c.transcript,
+        "speaker": c.speaker,
         "created_at": to_utc_iso(c.created_at),
     }
+    if with_resource and c.resource:
+        d["resource"] = {"id": c.resource.id, "filename": c.resource.filename,
+                         "project": c.resource.project.name if c.resource.project else None,
+                         "session": c.resource.session.name if c.resource.session else None}
+    return d
+
+
+@bp.get("/segments/search")
+def search_segments():
+    """
+    PLAN 18.4: "the unit of search [for voice material] is a segment, not just the file" -- finds
+    a clip by its OWN label/notes/transcript/speaker or any of its tags (the existing resource
+    search already covers a recording's own filename/notes/tags; this is the other half). Each hit
+    carries enough about its resource to jump straight to the moment.
+    """
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify([])
+    limit = min(int(request.args.get("limit", 30)), 100)
+    clips = (Clip.query.filter(db.or_(
+        Clip.label.icontains(q, autoescape=True),
+        Clip.notes.icontains(q, autoescape=True),
+        Clip.transcript.icontains(q, autoescape=True),
+        Clip.speaker.icontains(q, autoescape=True),
+        Clip.tags.any(Tag.name.icontains(q, autoescape=True)),
+    )).order_by(Clip.created_at.desc()).limit(limit).all())
+    return jsonify([_clip_to_dict(c, with_resource=True) for c in clips])
 
 
 # --- Export / format-conversion workflow ---
@@ -1722,8 +1781,11 @@ def merge_category(slug):
 def list_tags():
     counts = dict(db.session.query(resource_tags.c.tag_id, db.func.count(resource_tags.c.resource_id))
                   .group_by(resource_tags.c.tag_id).all())
+    clip_counts = dict(db.session.query(clip_tags.c.tag_id, db.func.count(clip_tags.c.clip_id))
+                       .group_by(clip_tags.c.tag_id).all())
     tags = Tag.query.order_by(db.func.lower(Tag.name)).all()
-    return jsonify([{"id": t.id, "name": t.name, "file_count": counts.get(t.id, 0)} for t in tags])
+    return jsonify([{"id": t.id, "name": t.name, "file_count": counts.get(t.id, 0),
+                     "clip_count": clip_counts.get(t.id, 0)} for t in tags])
 
 
 @bp.patch("/tags/<tag_id>")
@@ -1743,7 +1805,8 @@ def rename_tag(tag_id):
 
 @bp.post("/tags/<tag_id>/merge")
 def merge_tag(tag_id):
-    """Move every use of this tag to another tag (skipping files that already have it), then remove this one."""
+    """Move every use of this tag -- on files AND on clips/segments, the same shared pool
+    (PLAN 18.4) -- to another tag (skipping ones that already have it), then remove this one."""
     src = Tag.query.get_or_404(tag_id)
     target = db.session.get(Tag, (request.get_json() or {}).get("into"))
     if target is None or target.id == src.id:
@@ -1754,19 +1817,33 @@ def merge_tag(tag_id):
         if rid not in with_target:
             db.session.execute(resource_tags.insert().values(resource_id=rid, tag_id=target.id))
     db.session.execute(resource_tags.delete().where(resource_tags.c.tag_id == src.id))
+
+    clips_with_target = {cid for (cid,) in db.session.query(clip_tags.c.clip_id).filter(clip_tags.c.tag_id == target.id)}
+    clips_on_src = [cid for (cid,) in db.session.query(clip_tags.c.clip_id).filter(clip_tags.c.tag_id == src.id)]
+    for cid in clips_on_src:
+        if cid not in clips_with_target:
+            db.session.execute(clip_tags.insert().values(clip_id=cid, tag_id=target.id))
+    db.session.execute(clip_tags.delete().where(clip_tags.c.tag_id == src.id))
+
     db.session.delete(src)
     db.session.commit()
-    return jsonify({"merged": len(on_src), "into": target.id})
+    return jsonify({"merged": len(on_src), "clips_merged": len(clips_on_src), "into": target.id})
 
 
 @bp.delete("/tags/<tag_id>")
 def delete_tag(tag_id):
-    """Remove a tag from everything and delete it. Refuses if it is in use unless ?force=1."""
+    """Remove a tag from everything (files and clips/segments) and delete it. Refuses if it is in
+    use anywhere unless ?force=1."""
     tag = Tag.query.get_or_404(tag_id)
     used = db.session.query(db.func.count()).select_from(resource_tags).filter(resource_tags.c.tag_id == tag.id).scalar()
-    if used and not request.args.get("force"):
-        return jsonify({"error": f"this tag is on {used} file(s); merge it into another tag, or delete anyway", "file_count": used}), 409
+    clip_used = db.session.query(db.func.count()).select_from(clip_tags).filter(clip_tags.c.tag_id == tag.id).scalar()
+    if (used or clip_used) and not request.args.get("force"):
+        return jsonify({
+            "error": f"this tag is on {used} file(s) and {clip_used} clip(s); merge it into another tag, or delete anyway",
+            "file_count": used, "clip_count": clip_used,
+        }), 409
     db.session.execute(resource_tags.delete().where(resource_tags.c.tag_id == tag.id))
+    db.session.execute(clip_tags.delete().where(clip_tags.c.tag_id == tag.id))
     db.session.delete(tag)
     db.session.commit()
     return "", 204

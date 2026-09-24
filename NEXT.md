@@ -14,7 +14,22 @@ Resource Detail, Library. Deploy: tar → scp pmx2 → `pct push 132` → extrac
 `audio-manager-worker@1.service`. No pytest locally (no Flask); run
 `python3 -m unittest discover -s tests` **on the container** with
 `/etc/audio-manager/audio-manager.env` loaded and `PYTHONPATH=/opt/audio-manager`.
-`audiowaveform` 1.10.2 is installed on the container. No git remote yet.
+`audiowaveform` 1.10.2 is installed on the container. Git remote: `origin` ->
+`git@github.com:broadcasttechie/audioman` (added 2026-09-24), **public** --
+the repo has real local IPs/hostnames in PLAN.md/DEPLOYMENT.md, flip it
+private on GitHub if that wasn't intended.
+
+## Known issue (reported 2026-09-24, not yet investigated)
+- **Map doesn't line up with the audio.** User's words: "i can't seem to get the map to
+  line up with the audio." This is the per-recording Location section's route/marker sync
+  (`app/static/map.js` + `resource_detail.html`): the marker is supposed to follow the audio
+  along the GPS route, interpolated between fixes by time, and clicking the route seeks the
+  audio to that moment. **Explicitly deferred at the user's request — do not investigate until
+  asked.** One unconfirmed thing worth checking first when this is picked up: the captured-at
+  edit field on this same page only stored/edited **minute** precision until today's fix (see
+  the "captured time needs seconds" entry below) — if the sync math anchors on captured_at,
+  a truncated start time would throw the whole route off by up to 59s. Not verified, just the
+  first thing to rule out.
 
 ## Decisions (all stated or agreed by the user)
 - **Model:** Project → Session → File. A session is one night (shows) or one
@@ -384,6 +399,45 @@ No migration was needed (the user confirmed only test data exists), so the chang
   effect here, same as a schema change (Flask caches compiled templates; two earlier pushes this
   session looked deployed by their 200 checks but weren't actually live until this restart).
 
+## Built 2026-09-24: manual segment tagging (PLAN 18.4)
+- **A clip carries tags (the same shared pool as files/projects), a transcript and a speaker now**
+  -- `Clip` extended in place rather than renamed to `Segment`, to avoid disturbing the working
+  export/editor code (see PLAN 18.4.1 for why that's still faithful to the original design note).
+  Editable from the full-screen editor's clip panel: speaker field, tag chips (find-or-create,
+  same UI as a recording's own tags), a transcript textarea.
+- **`GET /api/segments/search?q=`**: the unit of search is the segment, not just the file (find
+  Jacob saying a particular phrase). Matches a clip's own label/notes/transcript/speaker/tags and
+  returns enough about its resource to jump straight to the moment. Surfaced in the Library page as
+  a "Moments" section above the file results when you search; opens `/edit/<id>?clip=<id>`, which
+  now selects, plays and scrolls to that exact clip on load.
+- **Fixed along the way:** the tag pool being genuinely shared (files AND clips) exposed that
+  `delete_tag`/`merge_tag`/`list_tags` only ever accounted for file usage, predating clips having
+  tags -- a tag used only by a clip could be deleted with no warning, and merging one would silently
+  drop its clip uses instead of moving them. Fixed, and `manage.html`'s delete/merge confirmations
+  (which had the same file-count-only blind spot) updated to match.
+- Verified: a live run (`tests/live/live_segments.py`) covering the full round trip including all
+  three tag-pool fixes and deleting a tagged clip cleanly, plus 2 new Node tests. Full regression
+  after: 145 unit tests, 16 live suites, 55 Node tests.
+- **Not built:** BWF/iXML export markers for segments (PLAN says this was always open, "format
+  details to design at build time" -- still true); the transcription worker itself (needs a
+  separate Mac/GPU machine this session has no access to); ranked full-text search (today's segment
+  search is the same simple substring match the rest of the app's search uses).
+- **While this was being built, your real Drive Inbox pull picked up 3 real files** (the documented
+  Insta360 split chain from 2026-09-17, `audio_260917_100746/103748/110748`) -- entirely unrelated
+  to this session's work, just the normal timer doing its job. They're sitting in Review, and the
+  split-join sweeper already flagged them as a suggestion at `/groups`.
+
+## Fixed 2026-09-24: captured-time editing/display was truncating seconds
+User report: "the captured time needs seconds." The recording page's "Captured at" field
+(`resource_detail.html`) was a `datetime-local` input with no `step`, so the browser only showed/
+accepted hour:minute -- editing it (even just nudging the precision dropdown) round-tripped
+through a value with no seconds, silently zeroing any that were actually stored (some sources do
+carry them: GPS, filenames with a seconds group). Fixed: `step: '1'` on the input plus seconds in
+the value string; also added seconds to the two other places a clock time (not just a date) is
+already shown -- the suggested-date hint on the same page, and the review queue's card subtitle.
+Deployed and verified live (grepped the served page for the new format strings post-restart, not
+just a 200). See the note above about a possible link to the map-sync issue.
+
 ## Fixed 2026-09-21 (found by a regression run and by looking at Home)
 - **Sweepers survive a resource vanishing mid-run** (previews and filing now iterate ids and re-read each row).
 - **Stranded queue rows:** a worker restarted mid-job left its row `running`, which blocked new runs of that job for
@@ -426,15 +480,18 @@ checks (`tests/live/`).
 | 6 | Waveform + listening copy + reclaimable space | **done** ([app] device export API **done**: browse/playback/export delegated under device auth) |
 | 8 | Categories as data, Manage, Home, maps, place names | **done** (per-recording route map, all-recordings map, Photon place names, swappable providers) |
 | 9 | Placement + per-file copies + Drive remote | not started (Drive-copy design unresolved) |
-| 10 | Segments UI, then transcription worker | not started |
+| 10 | Segments UI, then transcription worker | **manual tagging done** (tags/transcript/speaker on a clip, segment search, deep links); transcription worker not started (needs a separate Mac/GPU machine) |
 
 **Not in the MVP, in the order I would do them:**
-1. **Segments and transcription** (waveform region tagging first; needs no ML), then the Mac/GPU transcription worker.
+1. **The Mac/GPU transcription worker** (PLAN §18.5) -- needs a decision on which machine, and
+   access to it (this session only has the Proxmox container). Manual segment tagging, which was
+   the prerequisite, is done (below).
 2. **Non-destructive processing** (PLAN §21: gain/normalise, fades, filters, mono/stereo mix, sample-rate and bit-depth
    conversion incl. 32-bit float, FLAC/MP3/Opus export) as a new step on the editor, building on the clip/export plumbing
    that already exists.
 3. **Placement/Drive copies** (needs the Drive remote decision: `drive.file` OAuth vs full OAuth vs skip).
-4. Smaller: DAW project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
+4. Smaller: BWF/iXML export markers for segments (PLAN 18.4, still genuinely undesigned), DAW
+   project-file adoption from the NAS, DST-ambiguity flag, a UI for recorder profiles, README refresh.
 
 ~~Split-file joining and multitrack/outing grouping~~ **done 2026-09-22**, see the "Built" section above and PLAN §22.
 ~~Package 4 -> 5 (upload v2) -> 6 (device export): the Android app's backend~~ **done 2026-09-24**, see the "Built"
@@ -526,5 +583,6 @@ work packages above (marked [app], updated 2026-09-21 at the user's request:
 
 ## Not decided / parked
 Private flag; encryption at rest; soundcheck-vs-show sessions; tag "kind";
-semantic search; git remote; nginx `client_max_body_size` and Flask
-`MAX_CONTENT_LENGTH` (uploads of large files).
+semantic search; nginx `client_max_body_size` and Flask
+`MAX_CONTENT_LENGTH` (uploads of large files, though the device-upload path
+no longer needs a large one -- see PLAN 19.6).
